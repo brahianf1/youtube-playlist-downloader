@@ -57,20 +57,28 @@ def extract_playlist_info(url):
         'quiet': True,
         'extract_flat': True,
         'force_generic_extractor': False,
+        'retries': 10,                # Aumentar el número de reintentos
+        'fragment_retries': 10,       # Aumentar reintentos para fragmentos
+        'skip_unavailable_fragments': True,
+        'ignoreerrors': True,         # Ignorar errores y continuar
+        'extractor_retries': 10,      # Reintentos específicos para extractores
+        'socket_timeout': 30,         # Aumentar el tiempo de espera del socket
     }
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
             if 'entries' in info:
+                # Filtrar entradas None que pueden aparecer cuando hay errores
+                valid_entries = [entry for entry in info['entries'] if entry is not None]
                 return {
                     'title': info.get('title', 'Playlist desconocida'),
-                    'total_videos': len(info['entries']),
+                    'total_videos': len(valid_entries),
                     'videos': [{
                         'title': entry.get('title', f'Video {i+1}'),
                         'id': entry.get('id', ''),
                         'url': entry.get('url', '')
-                    } for i, entry in enumerate(info['entries'])]
+                    } for i, entry in enumerate(valid_entries)]
                 }
             else:
                 return {
@@ -102,6 +110,21 @@ def download_videos(url, download_id, format_option='video'):
     logger.update_status()
     
     # Configurar opciones de descarga
+    # Opciones comunes para ambos formatos
+    common_opts = {
+        'outtmpl': os.path.join(DOWNLOAD_FOLDER, download_id, '%(title)s.%(ext)s'),
+        'logger': logger,
+        'progress_hooks': [lambda d: progress_hook(d, logger)],
+        'retries': 10,                # Aumentar el número de reintentos
+        'fragment_retries': 10,       # Aumentar reintentos para fragmentos
+        'skip_unavailable_fragments': True,
+        'ignoreerrors': True,         # Ignorar errores y continuar
+        'extractor_retries': 10,      # Reintentos específicos para extractores
+        'socket_timeout': 30,         # Aumentar el tiempo de espera del socket
+        'external_downloader_args': ['--max-retries', '10'],  # Para aria2 si está disponible
+        'playlist_items': '1-1000',   # Limitar a 1000 videos por lista para evitar problemas
+    }
+    
     if format_option == 'audio':
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -110,16 +133,12 @@ def download_videos(url, download_id, format_option='video'):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'outtmpl': os.path.join(DOWNLOAD_FOLDER, download_id, '%(title)s.%(ext)s'),
-            'logger': logger,
-            'progress_hooks': [lambda d: progress_hook(d, logger)],
+            **common_opts
         }
     else:  # video
         ydl_opts = {
             'format': 'best',
-            'outtmpl': os.path.join(DOWNLOAD_FOLDER, download_id, '%(title)s.%(ext)s'),
-            'logger': logger,
-            'progress_hooks': [lambda d: progress_hook(d, logger)],
+            **common_opts
         }
     
     # Crear directorio para esta descarga
@@ -131,11 +150,49 @@ def download_videos(url, download_id, format_option='video'):
             download_status[download_id]['status'] = 'downloading'
             ydl.download([url])
         
-        download_status[download_id]['status'] = 'completed'
-        download_status[download_id]['completed_videos'] = logger.total_videos
+        # Verificar si se descargaron archivos
+        download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
+        files = [f for f in os.listdir(download_dir) if os.path.isfile(os.path.join(download_dir, f))]
+        
+        if files:
+            download_status[download_id]['status'] = 'completed'
+            # Actualizar el contador de videos completados basado en archivos reales
+            download_status[download_id]['completed_videos'] = len(files)
+            logger.completed_videos = len(files)
+            logger.update_status()
+        else:
+            download_status[download_id]['status'] = 'error'
+            download_status[download_id]['errors'].append('No se pudieron descargar archivos. Intenta con otra lista de reproducción o video individual.')
+    
+    except yt_dlp.utils.ExtractorError as e:
+        error_msg = str(e)
+        download_status[download_id]['status'] = 'error'
+        
+        if 'Incomplete data received' in error_msg:
+            # Mensaje específico para el error de datos incompletos
+            download_status[download_id]['errors'].append(
+                'Error: YouTube no proporcionó datos completos. Esto puede ocurrir con listas de reproducción grandes. '
+                'Intenta descargar la lista en partes más pequeñas o descargar videos individuales.'
+            )
+        else:
+            download_status[download_id]['errors'].append(f'Error al extraer información: {error_msg}')
+    
     except Exception as e:
         download_status[download_id]['status'] = 'error'
-        download_status[download_id]['errors'].append(str(e))
+        download_status[download_id]['errors'].append(f'Error inesperado: {str(e)}')
+        
+    # Verificar si se descargaron algunos archivos a pesar de los errores
+    if download_status[download_id]['status'] == 'error':
+        download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
+        if os.path.exists(download_dir):
+            files = [f for f in os.listdir(download_dir) if os.path.isfile(os.path.join(download_dir, f))]
+            if files:
+                download_status[download_id]['status'] = 'partial'
+                download_status[download_id]['completed_videos'] = len(files)
+                download_status[download_id]['errors'].append(
+                    f'Se descargaron {len(files)} archivos antes de encontrar errores. '
+                    'Puedes acceder a los archivos descargados a continuación.'
+                )
 
 # Función para manejar el progreso
 def progress_hook(d, logger):
@@ -220,7 +277,15 @@ def list_downloads(download_id):
                 'url': f'/downloads/{download_id}/{filename}'
             })
     
-    return jsonify({'files': files})
+    # Incluir el estado de la descarga en la respuesta
+    status = 'completed'
+    if download_id in download_status:
+        status = download_status[download_id]['status']
+    
+    return jsonify({
+        'files': files,
+        'status': status
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

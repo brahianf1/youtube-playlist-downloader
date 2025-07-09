@@ -146,8 +146,11 @@
                 </div>
                 
                 <div class="download-complete d-none">
-                    <div class="alert alert-success">
+                    <div class="alert alert-success download-complete-message">
                         <i class="bi bi-check-circle-fill"></i> ¡Descarga completada!
+                    </div>
+                    <div class="alert alert-warning download-partial-message d-none">
+                        <i class="bi bi-exclamation-triangle-fill"></i> Descarga parcialmente completada. Algunos videos no pudieron ser descargados.
                     </div>
                     <div class="file-list list-group mb-3">
                         <!-- Aquí se listarán los archivos descargados -->
@@ -237,10 +240,10 @@
                         updateDownloadElement(downloadElement, data);
                         
                         // Si la descarga ha terminado, detener las actualizaciones
-                        if (data.status === 'completed' || data.status === 'error') {
+                        if (data.status === 'completed' || data.status === 'partial' || data.status === 'error') {
                             clearInterval(statusIntervals[downloadId]);
                             
-                            if (data.status === 'completed') {
+                            if (data.status === 'completed' || data.status === 'partial') {
                                 showDownloadedFiles(downloadId, downloadElement);
                             }
                         }
@@ -309,6 +312,18 @@
                         completeSection.classList.remove('d-none');
                         fileList.innerHTML = '';
                         
+                        // Mostrar el mensaje adecuado según el estado
+                        const completeMessage = element.querySelector('.download-complete-message');
+                        const partialMessage = element.querySelector('.download-partial-message');
+                        
+                        if (data.status === 'partial') {
+                            completeMessage.classList.add('d-none');
+                            partialMessage.classList.remove('d-none');
+                        } else {
+                            completeMessage.classList.remove('d-none');
+                            partialMessage.classList.add('d-none');
+                        }
+                        
                         data.files.forEach(file => {
                             const fileItem = document.createElement('a');
                             fileItem.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
@@ -355,6 +370,7 @@
                     case 'starting': return 'Iniciando';
                     case 'downloading': return 'Descargando';
                     case 'completed': return 'Completado';
+                    case 'partial': return 'Completado Parcialmente';
                     case 'error': return 'Error';
                     default: return 'Desconocido';
                 }
@@ -365,6 +381,7 @@
                     case 'starting': return 'bg-secondary';
                     case 'downloading': return 'bg-primary';
                     case 'completed': return 'bg-success';
+                    case 'partial': return 'bg-warning';
                     case 'error': return 'bg-danger';
                     default: return 'bg-secondary';
                 }
