@@ -23,33 +23,84 @@ os.makedirs(LOGS_FOLDER, exist_ok=True)
 # Almacenamiento de estado de descargas
 download_status = {}
 
-# Clase para manejar el progreso de descarga
-class DownloadLogger:
-    def __init__(self, download_id):
-        self.download_id = download_id
-        self.current_video = None
-        self.total_videos = 0
-        self.completed_videos = 0
-        self.current_progress = 0
-        self.update_status()
+# Función para manejar el progreso
+def progress_hook(d, download_id):
+    status = download_status.get(download_id)
+    if not status:
+        return
+
+    # Identificar qué parte se está procesando (video, audio, merge)
+    filename = d.get('filename', '')
+    format_id = d.get('info_dict', {}).get('format_id', 'default')
     
-    def debug(self, msg):
-        pass
+    # Inicializar o actualizar el seguimiento de partes si no existe
+    if 'parts' not in status:
+        status['parts'] = {}
     
-    def warning(self, msg):
-        pass
+    # Crear una clave única para esta parte del proceso
+    part_key = format_id
+    if '_mp4' in filename or '.mp4.' in filename or '.mkv.' in filename:
+        part_key = 'merge'
     
-    def error(self, msg):
-        download_status[self.download_id]['errors'].append(msg)
-        self.update_status()
+    # Inicializar la entrada para esta parte si no existe
+    if part_key not in status['parts']:
+        status['parts'][part_key] = {
+            'total_bytes': 0,
+            'downloaded_bytes': 0,
+            'status': 'pending'
+        }
     
-    def update_status(self):
-        download_status[self.download_id].update({
-            'current_video': self.current_video,
-            'total_videos': self.total_videos,
-            'completed_videos': self.completed_videos,
-            'current_progress': self.current_progress
-        })
+    part = status['parts'][part_key]
+    
+    status['hook_status'] = d['status']
+    status['current_stage'] = 'Mezclando formatos...' if part_key == 'merge' else f"Descargando {part_key}..."
+    
+    if d['status'] == 'downloading':
+        # Actualizar datos de esta parte
+        status['current_video'] = os.path.basename(filename)
+        part['status'] = 'downloading'
+        
+        # Actualizar bytes solo si hay información disponible
+        total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
+        if total_bytes:
+            part['total_bytes'] = total_bytes
+        
+        downloaded_bytes = d.get('downloaded_bytes')
+        if downloaded_bytes:
+            part['downloaded_bytes'] = downloaded_bytes
+        
+        # Actualizar métricas de velocidad y tiempo
+        status['speed'] = d.get('speed')
+        status['eta'] = d.get('eta')
+        status['elapsed'] = d.get('elapsed')
+        
+        # Calcular el progreso general combinando todas las partes
+        total_bytes_all_parts = sum(p.get('total_bytes', 0) for p in status['parts'].values())
+        downloaded_bytes_all_parts = sum(p.get('downloaded_bytes', 0) for p in status['parts'].values())
+        
+        if total_bytes_all_parts > 0:
+            status['total_bytes'] = total_bytes_all_parts
+            status['downloaded_bytes'] = downloaded_bytes_all_parts
+            status['current_progress'] = int((downloaded_bytes_all_parts / total_bytes_all_parts) * 100)
+
+    elif d['status'] == 'finished':
+        # Marcar esta parte como completada
+        part['status'] = 'finished'
+        if part['total_bytes'] > 0:
+            part['downloaded_bytes'] = part['total_bytes']  # Asegurar que se marca como 100% completado
+        
+        # Guardar el archivo finalizado
+        if not filename.endswith(('.part', '.ytdl', '.f')):
+            if 'completed_files' not in status:
+                status['completed_files'] = []
+            if filename not in status['completed_files']:
+                status['completed_files'].append(filename)
+        
+        # No incrementamos completed_videos aquí, se hará al final
+    
+    elif d['status'] == 'error':
+        part['status'] = 'error'
+        status['errors'].append(f"Error durante la descarga del fragmento: {os.path.basename(filename)}")
 
 # Función para extraer información de la lista de reproducción
 def extract_playlist_info(url):
@@ -95,32 +146,41 @@ def extract_playlist_info(url):
 
 # Función para descargar videos
 def download_videos(download_options, download_id):
-    logger = DownloadLogger(download_id)
     url = download_options['url']
-
-    # Obtener información de la lista/video
-    playlist_info = extract_playlist_info(url)
-    if 'error' in playlist_info:
-        download_status[download_id]['status'] = 'error'
-        download_status[download_id]['errors'].append(playlist_info['error'])
-        return
-
-    download_status[download_id]['playlist_title'] = playlist_info['title']
-    logger.total_videos = playlist_info['total_videos']
-    logger.update_status()
-
+    
     # Configurar opciones de descarga
+    download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
+    os.makedirs(download_dir, exist_ok=True)
+
     common_opts = {
-        'outtmpl': os.path.join(DOWNLOAD_FOLDER, download_id, '%(title)s.%(ext)s'),
-        'logger': logger,
-        'progress_hooks': [lambda d: progress_hook(d, logger)],
+        'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+        'progress_hooks': [lambda d: progress_hook(d, download_id)],
         'retries': 10,
         'fragment_retries': 10,
         'skip_unavailable_fragments': True,
         'ignoreerrors': True,
-        'extractor_retries': 10,
-        'socket_timeout': 30,
+        'noprogress': True, # Desactiva la barra de progreso de yt-dlp en consola
+        'quiet': True,
+        'no_warnings': True,
+        'writeinfojson': True,  # Guardar metadatos para identificar archivos finales
+        'writethumbnail': True, # Guardar miniatura
     }
+
+    # Obtener información de la lista/video primero
+    try:
+        with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'force_generic_extractor': False}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if 'entries' in info:
+                valid_entries = [entry for entry in info.get('entries', []) if entry is not None]
+                download_status[download_id]['playlist_title'] = info.get('title', 'Playlist')
+                download_status[download_id]['total_videos'] = len(valid_entries)
+            else:
+                download_status[download_id]['playlist_title'] = info.get('title', 'Video')
+                download_status[download_id]['total_videos'] = 1
+    except Exception as e:
+        download_status[download_id]['status'] = 'error'
+        download_status[download_id]['errors'].append(f'Error al obtener información: {str(e)}')
+        return
 
     if download_options['type'] == 'playlist':
         common_opts['playlist_items'] = '1-1000'
@@ -136,84 +196,57 @@ def download_videos(download_options, download_id):
             }
         else:  # video
             ydl_opts = {
-                'format': 'best',
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'merge_output_format': 'mp4',  # Unir en mp4 por defecto
                 **common_opts
             }
     else: # single video
+        # Para video único, queremos unir video y audio con los formatos seleccionados
         ydl_opts = {
-            'format': f"{download_options['video_format_id']}+{download_options['audio_format_id']}",
+            'format': f"{download_options['video_format_id']}+{download_options['audio_format_id']}/bestvideo+bestaudio/best",
+            'merge_output_format': 'mp4', # Unir en mp4 por defecto
             **common_opts
         }
     
-    # Crear directorio para esta descarga
-    os.makedirs(os.path.join(DOWNLOAD_FOLDER, download_id), exist_ok=True)
-    
     # Iniciar descarga
     try:
+        download_status[download_id]['status'] = 'downloading'
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            download_status[download_id]['status'] = 'downloading'
             ydl.download([url])
         
-        # Verificar si se descargaron archivos
-        download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
-        files = [f for f in os.listdir(download_dir) if os.path.isfile(os.path.join(download_dir, f))]
+        # Procesar los archivos finales
+        final_files = []
+        for filename in os.listdir(download_dir):
+            # Ignorar archivos temporales y metadatos
+            if filename.endswith(('.part', '.ytdl', '.f', '.json', '.webp', '.jpg')):
+                continue
+            
+            file_path = os.path.join(download_dir, filename)
+            if os.path.isfile(file_path):
+                final_files.append({
+                    'name': filename,
+                    'path': file_path,
+                    'size': os.path.getsize(file_path),
+                    'url': f'/downloads/{download_id}/{filename}'
+                })
         
-        if files:
+        if final_files:
             download_status[download_id]['status'] = 'completed'
-            # Actualizar el contador de videos completados basado en archivos reales
-            download_status[download_id]['completed_videos'] = len(files)
-            logger.completed_videos = len(files)
-            logger.update_status()
+            download_status[download_id]['current_progress'] = 100
+            download_status[download_id]['final_files'] = final_files
+            download_status[download_id]['completed_videos'] = len(final_files)
+            download_status[download_id]['current_stage'] = 'Descarga completada'
         else:
+            # Si no hay archivos finales pero no hubo error, puede ser un problema
+            if not download_status[download_id]['errors']:
+                download_status[download_id]['errors'].append('La descarga finalizó pero no se encontraron archivos. Puede que el formato no sea compatible.')
             download_status[download_id]['status'] = 'error'
-            download_status[download_id]['errors'].append('No se pudieron descargar archivos. Intenta con otra lista de reproducción o video individual.')
-    
-    except yt_dlp.utils.ExtractorError as e:
-        error_msg = str(e)
-        download_status[download_id]['status'] = 'error'
-        
-        if 'Incomplete data received' in error_msg:
-            # Mensaje específico para el error de datos incompletos
-            download_status[download_id]['errors'].append(
-                'Error: YouTube no proporcionó datos completos. Esto puede ocurrir con listas de reproducción grandes. '
-                'Intenta descargar la lista en partes más pequeñas o descargar videos individuales.'
-            )
-        else:
-            download_status[download_id]['errors'].append(f'Error al extraer información: {error_msg}')
+            download_status[download_id]['current_stage'] = 'Error en la descarga'
     
     except Exception as e:
         download_status[download_id]['status'] = 'error'
-        download_status[download_id]['errors'].append(f'Error inesperado: {str(e)}')
-        
-    # Verificar si se descargaron algunos archivos a pesar de los errores
-    if download_status[download_id]['status'] == 'error':
-        download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
-        if os.path.exists(download_dir):
-            files = [f for f in os.listdir(download_dir) if os.path.isfile(os.path.join(download_dir, f))]
-            if files:
-                download_status[download_id]['status'] = 'partial'
-                download_status[download_id]['completed_videos'] = len(files)
-                download_status[download_id]['errors'].append(
-                    f'Se descargaron {len(files)} archivos antes de encontrar errores. '
-                    'Puedes acceder a los archivos descargados a continuación.'
-                )
-
-# Función para manejar el progreso
-def progress_hook(d, logger):
-    if d['status'] == 'downloading':
-        logger.current_video = d.get('filename', '').split('/')[-1]
-        try:
-            downloaded = d.get('downloaded_bytes', 0)
-            total = d.get('total_bytes', 0) or d.get('total_bytes_estimate', 0)
-            if total > 0:
-                logger.current_progress = int(downloaded / total * 100)
-            logger.update_status()
-        except:
-            pass
-    elif d['status'] == 'finished':
-        logger.completed_videos += 1
-        logger.current_progress = 0
-        logger.update_status()
+        download_status[download_id]['current_stage'] = 'Error en la descarga'
+        download_status[download_id]['errors'].append(f'Error inesperado durante la descarga: {str(e)}')
 
 # Rutas de la aplicación
 @app.route('/')
@@ -290,6 +323,16 @@ def start_download():
         'total_videos': 0,
         'completed_videos': 0,
         'current_progress': 0,
+        'total_bytes': 0,
+        'downloaded_bytes': 0,
+        'speed': 0,
+        'eta': 0,
+        'elapsed': 0,
+        'hook_status': 'pending',
+        'current_stage': 'Iniciando...',
+        'parts': {},           # Para seguimiento detallado de partes de video/audio
+        'completed_files': [],  # Archivos que han terminado de descargarse
+        'final_files': [],      # Lista final de archivos con URLs
         'errors': []
     }
 
@@ -304,20 +347,83 @@ def get_status(download_id):
     if download_id not in download_status:
         return jsonify({'error': 'ID de descarga no encontrado'}), 404
     
-    return jsonify(download_status[download_id])
+    status = download_status[download_id]
+    
+    # Construir una respuesta simplificada con la información relevante
+    response = {
+        'status': status['status'],
+        'current_stage': status.get('current_stage', 'Procesando...'),
+        'current_progress': status.get('current_progress', 0),
+        'total_bytes': status.get('total_bytes', 0),
+        'downloaded_bytes': status.get('downloaded_bytes', 0),
+        'speed': status.get('speed', 0),
+        'eta': status.get('eta', 0),
+        'elapsed': status.get('elapsed', 0),
+        'current_video': status.get('current_video', 'Procesando...'),
+        'total_videos': status.get('total_videos', 1),
+        'completed_videos': status.get('completed_videos', 0),
+        'errors': status.get('errors', [])
+    }
+    
+    # Si la descarga está completa o con error, incluir los archivos finales
+    if status['status'] in ['completed', 'error'] and status.get('final_files'):
+        response['files'] = [
+            {
+                'name': f.get('name'),
+                'size': f.get('size', 0),
+                'url': f.get('url')
+            } for f in status.get('final_files', [])
+        ]
+    
+    return jsonify(response)
 
-@app.route('/downloads/<download_id>/<filename>', methods=['GET'])
+@app.route('/downloads/<download_id>/<path:filename>', methods=['GET'])
 def download_file(download_id, filename):
-    return send_from_directory(os.path.join(DOWNLOAD_FOLDER, download_id), filename)
-
-@app.route('/api/downloads/<download_id>', methods=['GET'])
-def list_downloads(download_id):
+    # Validar que el ID de descarga existe
+    if download_id not in download_status:
+        return jsonify({'error': 'ID de descarga no encontrado'}), 404
+    
+    # Usar el secure_filename para evitar ataques de path traversal
+    safe_filename = secure_filename(os.path.basename(filename))
     download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
+    
+    # Verificar que el directorio existe
     if not os.path.exists(download_dir):
         return jsonify({'error': 'Directorio de descarga no encontrado'}), 404
     
+    # Intenta primero con el nombre exacto y luego con el nombre seguro
+    try:
+        return send_from_directory(download_dir, filename, as_attachment=True)
+    except:
+        try:
+            return send_from_directory(download_dir, safe_filename, as_attachment=True)
+        except:
+            return jsonify({'error': 'Archivo no encontrado'}), 404
+
+@app.route('/api/downloads/<download_id>', methods=['GET'])
+def list_downloads(download_id):
+    if download_id not in download_status:
+        return jsonify({'error': 'ID de descarga no encontrado'}), 404
+    
+    status = download_status[download_id]
+    download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
+    
+    if not os.path.exists(download_dir):
+        return jsonify({'error': 'Directorio de descarga no encontrado'}), 404
+    
+    # Si hay archivos finales ya registrados, usarlos
+    if status.get('final_files'):
+        return jsonify({
+            'files': status['final_files'],
+            'status': status['status']
+        })
+    
+    # De lo contrario, escanear el directorio
     files = []
     for filename in os.listdir(download_dir):
+        if filename.endswith(('.part', '.ytdl', '.f', '.json', '.webp', '.jpg')):
+            continue
+        
         file_path = os.path.join(download_dir, filename)
         if os.path.isfile(file_path):
             files.append({
@@ -326,14 +432,12 @@ def list_downloads(download_id):
                 'url': f'/downloads/{download_id}/{filename}'
             })
     
-    # Incluir el estado de la descarga en la respuesta
-    status = 'completed'
-    if download_id in download_status:
-        status = download_status[download_id]['status']
+    # Guardar en el estado para acceso futuro
+    status['final_files'] = files
     
     return jsonify({
         'files': files,
-        'status': status
+        'status': status['status']
     })
 
 if __name__ == '__main__':

@@ -150,12 +150,26 @@ function initApp() {
                         const now = Date.now();
                         elapsed = (elapsed === 0 && percent > 0) ? 1 : Math.floor((now - lastTime) / 1000);
                         let speed = 0, eta = 0;
-                        if (downloaded > 0 && elapsed > 0) {
+                        
+                        // Usar la velocidad proporcionada por el backend o calcularla
+                        if (status.speed && status.speed > 0) {
+                            speed = status.speed / (1024 * 1024); // Convertir a MB/s
+                            eta = status.eta || 0;
+                        } else if (downloaded > 0 && elapsed > 0) {
                             speed = ((downloaded - lastDownloaded) / 1024 / 1024) / (elapsed || 1);
                             eta = speed > 0 ? ((total - downloaded) / 1024 / 1024) / speed : 0;
                         }
+                        
                         lastDownloaded = downloaded;
                         lastTime = now;
+                        
+                        // Mostrar la etapa actual del proceso
+                        let stageInfo = '';
+                        if (status.current_stage) {
+                            stageInfo = `<div class="text-center small text-muted mb-2">${status.current_stage}</div>`;
+                            feedbackContainer.innerHTML = stageInfo;
+                        }
+                        
                         window.renderDownloadProgress({
                             container: feedbackContainer,
                             filename: status.current_video || 'Descargando...',
@@ -166,15 +180,69 @@ function initApp() {
                             eta,
                             elapsed
                         });
+                        
+                        // Si la descarga ha terminado
                         if (status.status === 'completed' || status.status === 'partial' || status.status === 'error') {
                             clearInterval(statusIntervals[downloadId]);
                             startSingleDownloadBtn.disabled = false;
+                            
                             if (status.status === 'completed') {
                                 feedbackContainer.innerHTML += '<div class="alert alert-success mt-2">¡Descarga completada!</div>';
+                                
+                                // Mostrar enlaces a los archivos descargados si están disponibles
+                                if (status.files && status.files.length > 0) {
+                                    window.renderDownloadLinks({
+                                        container: feedbackContainer,
+                                        files: status.files,
+                                        title: "Archivos descargados"
+                                    });
+                                } else {
+                                    // Si no hay archivos en la respuesta, buscar en el endpoint específico
+                                    fetch(`/api/downloads/${downloadId}`)
+                                        .then(r => r.json())
+                                        .then(data => {
+                                            if (data.files && data.files.length > 0) {
+                                                window.renderDownloadLinks({
+                                                    container: feedbackContainer,
+                                                    files: data.files,
+                                                    title: "Archivos descargados"
+                                                });
+                                            } else {
+                                                feedbackContainer.innerHTML += '<div class="alert alert-warning mt-2">No se encontraron archivos para descargar.</div>';
+                                            }
+                                        })
+                                        .catch(err => {
+                                            console.error("Error al obtener archivos:", err);
+                                            feedbackContainer.innerHTML += '<div class="alert alert-warning mt-2">No se pudieron obtener los archivos descargados.</div>';
+                                        });
+                                }
                             } else if (status.status === 'partial') {
                                 feedbackContainer.innerHTML += '<div class="alert alert-warning mt-2">Descarga parcial. Algunos archivos pueden faltar.</div>';
+                                // Intentar mostrar los archivos parciales
+                                fetch(`/api/downloads/${downloadId}`)
+                                    .then(r => r.json())
+                                    .then(data => {
+                                        if (data.files && data.files.length > 0) {
+                                            window.renderDownloadLinks({
+                                                container: feedbackContainer,
+                                                files: data.files,
+                                                title: "Archivos disponibles (descarga parcial)"
+                                            });
+                                        }
+                                    });
                             } else if (status.status === 'error') {
-                                feedbackContainer.innerHTML += '<div class="alert alert-danger mt-2">Ocurrió un error durante la descarga.</div>';
+                                // Mostrar errores específicos si están disponibles
+                                if (status.errors && status.errors.length > 0) {
+                                    const errorList = status.errors.map(err => `<li>${err}</li>`).join('');
+                                    feedbackContainer.innerHTML += `
+                                        <div class="alert alert-danger mt-2">
+                                            <p><strong>Ocurrieron errores durante la descarga:</strong></p>
+                                            <ul>${errorList}</ul>
+                                        </div>
+                                    `;
+                                } else {
+                                    feedbackContainer.innerHTML += '<div class="alert alert-danger mt-2">Ocurrió un error durante la descarga.</div>';
+                                }
                             }
                         }
                     });
@@ -232,12 +300,26 @@ function initApp() {
                         const now = Date.now();
                         elapsed = (elapsed === 0 && percent > 0) ? 1 : Math.floor((now - lastTime) / 1000);
                         let speed = 0, eta = 0;
-                        if (downloaded > 0 && elapsed > 0) {
+                        
+                        // Usar la velocidad proporcionada por el backend o calcularla
+                        if (status.speed && status.speed > 0) {
+                            speed = status.speed / (1024 * 1024); // Convertir a MB/s
+                            eta = status.eta || 0;
+                        } else if (downloaded > 0 && elapsed > 0) {
                             speed = ((downloaded - lastDownloaded) / 1024 / 1024) / (elapsed || 1);
                             eta = speed > 0 ? ((total - downloaded) / 1024 / 1024) / speed : 0;
                         }
+                        
                         lastDownloaded = downloaded;
                         lastTime = now;
+                        
+                        // Mostrar la etapa actual
+                        let stageInfo = '';
+                        if (status.current_stage) {
+                            stageInfo = `<div class="text-center small text-muted mb-2">${status.current_stage}</div>`;
+                            feedbackContainer.innerHTML = stageInfo;
+                        }
+                        
                         window.renderDownloadProgress({
                             container: feedbackContainer,
                             filename: status.current_video || 'Descargando...',
@@ -248,18 +330,72 @@ function initApp() {
                             eta,
                             elapsed
                         });
+                        
                         // Mostrar progreso de videos
                         if (status.total_videos > 1) {
                             feedbackContainer.innerHTML += `<div class='text-center small text-muted mt-1'>Videos completados: <b>${status.completed_videos}</b> de <b>${status.total_videos}</b></div>`;
                         }
+                        
+                        // Si la descarga ha terminado
                         if (status.status === 'completed' || status.status === 'partial' || status.status === 'error') {
                             clearInterval(statusIntervals[downloadId]);
+                            
                             if (status.status === 'completed') {
                                 feedbackContainer.innerHTML += '<div class="alert alert-success mt-2">¡Descarga de lista completada!</div>';
+                                
+                                // Mostrar enlaces a los archivos descargados si están disponibles
+                                if (status.files && status.files.length > 0) {
+                                    window.renderDownloadLinks({
+                                        container: feedbackContainer,
+                                        files: status.files,
+                                        title: "Videos descargados"
+                                    });
+                                } else {
+                                    // Si no hay archivos en la respuesta, buscar en el endpoint específico
+                                    fetch(`/api/downloads/${downloadId}`)
+                                        .then(r => r.json())
+                                        .then(data => {
+                                            if (data.files && data.files.length > 0) {
+                                                window.renderDownloadLinks({
+                                                    container: feedbackContainer,
+                                                    files: data.files,
+                                                    title: "Videos descargados"
+                                                });
+                                            } else {
+                                                feedbackContainer.innerHTML += '<div class="alert alert-warning mt-2">No se encontraron archivos para descargar.</div>';
+                                            }
+                                        })
+                                        .catch(err => {
+                                            console.error("Error al obtener archivos:", err);
+                                            feedbackContainer.innerHTML += '<div class="alert alert-warning mt-2">No se pudieron obtener los archivos descargados.</div>';
+                                        });
+                                }
                             } else if (status.status === 'partial') {
                                 feedbackContainer.innerHTML += '<div class="alert alert-warning mt-2">Descarga parcial. Algunos videos pueden faltar.</div>';
+                                // Intentar mostrar los archivos parciales
+                                fetch(`/api/downloads/${downloadId}`)
+                                    .then(r => r.json())
+                                    .then(data => {
+                                        if (data.files && data.files.length > 0) {                                                window.renderDownloadLinks({
+                                                container: feedbackContainer,
+                                                files: data.files,
+                                                title: "Videos disponibles (descarga parcial)"
+                                            });
+                                        }
+                                    });
                             } else if (status.status === 'error') {
-                                feedbackContainer.innerHTML += '<div class="alert alert-danger mt-2">Ocurrió un error durante la descarga.</div>';
+                                // Mostrar errores específicos si están disponibles
+                                if (status.errors && status.errors.length > 0) {
+                                    const errorList = status.errors.map(err => `<li>${err}</li>`).join('');
+                                    feedbackContainer.innerHTML += `
+                                        <div class="alert alert-danger mt-2">
+                                            <p><strong>Ocurrieron errores durante la descarga:</strong></p>
+                                            <ul>${errorList}</ul>
+                                        </div>
+                                    `;
+                                } else {
+                                    feedbackContainer.innerHTML += '<div class="alert alert-danger mt-2">Ocurrió un error durante la descarga.</div>';
+                                }
                             }
                         }
                     });
