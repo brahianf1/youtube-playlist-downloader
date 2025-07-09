@@ -34,7 +34,6 @@ function formatTime(seconds) {
     const s = Math.floor(seconds % 60);
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
-}
 
 // Estado global de descargas
 const statusIntervals = {};
