@@ -225,11 +225,15 @@ def get_video_info():
     data = request.json
     url = data.get('url', '')
     if not url or not re.match(r'^(https?\:\/\/)?(www\.youtube\.com|youtu\.?be)\/.*$', url):
-        return jsonify({'error': 'URL de YouTube inválida'}), 400
+        return jsonify({
+            'error': 'URL de YouTube inválida.',
+            'source': 'backend_validation',
+            'details': 'La URL proporcionada no parece ser un enlace de YouTube válido.'
+        }), 400
 
-    ydl_opts = {'quiet': True}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
+    ydl_opts = {'quiet': True, 'no_warnings': True}
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             formats = []
             for f in info.get('formats', []):
@@ -244,8 +248,29 @@ def get_video_info():
                     'abr': f.get('abr')
                 })
             return jsonify({'title': info.get('title'), 'formats': formats})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
+    except yt_dlp.utils.DownloadError as e:
+        error_message = str(e)
+        user_friendly_message = "No se pudo obtener la información del video desde YouTube. "
+        if 'Unsupported URL' in error_message:
+            user_friendly_message += "La URL no es compatible."
+        elif 'video is unavailable' in error_message.lower():
+            user_friendly_message += "El video no está disponible (puede haber sido eliminado)."
+        elif 'private video' in error_message.lower():
+            user_friendly_message += "El video es privado y no se puede acceder."
+        else:
+            user_friendly_message += "Verifica la URL e inténtalo de nuevo."
+        
+        return jsonify({
+            'error': user_friendly_message,
+            'source': 'yt-dlp',
+            'details': error_message
+        }), 500
+    except Exception as e:
+        return jsonify({
+            'error': 'Ocurrió un error inesperado en el servidor al procesar la solicitud.',
+            'source': 'backend_server',
+            'details': str(e)
+        }), 500
 
 @app.route('/api/download', methods=['POST'])
 def start_download():
