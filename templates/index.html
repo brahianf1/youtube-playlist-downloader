@@ -118,7 +118,44 @@
                     </div>
                 </div>
             </div>
-            <div class="tab-pane fade" id="single-video-downloader" role=
+            <div class="tab-pane fade" id="single-video-downloader" role="tabpanel" aria-labelledby="single-video-tab">
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <i class="bi bi-camera-video"></i> Ingresa la URL del video
+                    </div>
+                    <div class="card-body">
+                        <form id="single-video-form">
+                            <div class="mb-3">
+                                <label for="video-url" class="form-label">URL del video:</label>
+                                <input type="url" class="form-control" id="video-url" placeholder="https://www.youtube.com/watch?v=..." required>
+                            </div>
+                            <button type="button" class="btn btn-secondary w-100 mb-3" id="get-video-info-btn">
+                                <i class="bi bi-info-circle"></i> Obtener Información del Video
+                            </button>
+                        </form>
+                        
+                        <div id="video-info-container" class="d-none">
+                            <hr>
+                            <h5 id="video-title" class="mb-3"></h5>
+                            
+                            <div class="mb-3">
+                                <label for="video-format-select" class="form-label">Calidad de video:</label>
+                                <select id="video-format-select" class="form-select"></select>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="audio-format-select" class="form-label">Formato de audio:</label>
+                                <select id="audio-format-select" class="form-select"></select>
+                            </div>
+                            
+                            <button type="button" class="btn btn-primary w-100" id="start-single-download-btn">
+                                <i class="bi bi-download"></i> Iniciar Descarga del Video
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
         
         <div id="downloads-container">
             <!-- Aquí se mostrarán las descargas activas -->
@@ -251,23 +288,76 @@
                 videoSelect.innerHTML = '';
                 audioSelect.innerHTML = '';
 
-                data.formats.forEach(f => {
+                // Filtrar y ordenar formatos de video (solo video sin audio)
+                const videoFormats = data.formats
+                    .filter(f => f.vcodec !== 'none' && f.acodec === 'none')
+                    .sort((a, b) => {
+                        // Extraer la altura del video de la resolución (ej: 1920x1080 -> 1080)
+                        const heightA = parseInt((a.resolution || '').split('x')[1]) || 0;
+                        const heightB = parseInt((b.resolution || '').split('x')[1]) || 0;
+                        return heightB - heightA;
+                    });
+
+                // Agregar formatos de video al selector
+                videoFormats.forEach(f => {
                     const option = document.createElement('option');
                     option.value = f.format_id;
-                    option.textContent = `${f.ext} - ${f.resolution} (${f.fps}fps) - ${formatFileSize(f.filesize_approx)}`;
-                    if (f.vcodec !== 'none') {
-                        videoSelect.appendChild(option);
-                    }
+                    const height = (f.resolution || '').split('x')[1] || 'N/A';
+                    const fps = f.fps ? `${f.fps}fps` : '';
+                    const size = f.filesize_approx ? formatFileSize(f.filesize_approx) : 'N/A';
+                    option.textContent = `${height}p ${fps} - ${f.ext} - ${size}`;
+                    videoSelect.appendChild(option);
                 });
 
-                data.formats.forEach(f => {
+                // Si no hay formatos de video separados, usar formatos combinados
+                if (videoFormats.length === 0) {
+                    data.formats
+                        .filter(f => f.vcodec !== 'none' && f.acodec !== 'none')
+                        .sort((a, b) => {
+                            const heightA = parseInt((a.resolution || '').split('x')[1]) || 0;
+                            const heightB = parseInt((b.resolution || '').split('x')[1]) || 0;
+                            return heightB - heightA;
+                        })
+                        .forEach(f => {
+                            const option = document.createElement('option');
+                            option.value = f.format_id;
+                            const height = (f.resolution || '').split('x')[1] || 'N/A';
+                            const fps = f.fps ? `${f.fps}fps` : '';
+                            const size = f.filesize_approx ? formatFileSize(f.filesize_approx) : 'N/A';
+                            option.textContent = `${height}p ${fps} - ${f.ext} - ${size} (con audio)`;
+                            videoSelect.appendChild(option);
+                        });
+                }
+
+                // Filtrar y ordenar formatos de audio
+                const audioFormats = data.formats
+                    .filter(f => f.acodec !== 'none' && f.vcodec === 'none')
+                    .sort((a, b) => (b.abr || 0) - (a.abr || 0));
+
+                audioFormats.forEach(f => {
                     const option = document.createElement('option');
                     option.value = f.format_id;
-                    option.textContent = `${f.ext} - ${f.abr}kbps - ${formatFileSize(f.filesize_approx)}`;
-                    if (f.acodec !== 'none' && f.vcodec === 'none') {
-                        audioSelect.appendChild(option);
-                    }
+                    const abr = f.abr ? `${f.abr}kbps` : 'N/A';
+                    const size = f.filesize_approx ? formatFileSize(f.filesize_approx) : 'N/A';
+                    option.textContent = `${f.ext} - ${abr} - ${size}`;
+                    audioSelect.appendChild(option);
                 });
+
+                // Si no hay formatos seleccionados, mostrar mensaje
+                if (videoSelect.children.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No hay formatos de video disponibles';
+                    option.disabled = true;
+                    videoSelect.appendChild(option);
+                }
+                if (audioSelect.children.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No hay formatos de audio disponibles';
+                    option.disabled = true;
+                    audioSelect.appendChild(option);
+                }
             }
             
             function createDownloadElement() {
