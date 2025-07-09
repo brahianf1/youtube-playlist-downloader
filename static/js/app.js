@@ -44,22 +44,27 @@ function initApp() {
     // Feedback de carga al obtener info del video
     getVideoInfoBtn.addEventListener('click', function() {
         const videoUrl = document.getElementById('video-url').value.trim();
+        const feedbackContainer = document.getElementById('video-feedback-container');
+        feedbackContainer.innerHTML = ''; // Limpiar feedback anterior
+
         if (!videoUrl) {
             alert('Por favor, ingresa la URL de un video.');
             return;
         }
         videoInfoContainer.classList.add('d-none');
-        showSpinner(getVideoInfoBtn.parentElement, 'Obteniendo información del video...');
+        showSpinner(feedbackContainer, 'Obteniendo información del video...'); // Usar el contenedor de feedback
         getVideoInfoBtn.disabled = true;
         let didRespond = false;
+        
         // Timeout de 15 segundos para feedback
         const timeoutId = setTimeout(() => {
             if (!didRespond) {
-                hideSpinner(getVideoInfoBtn.parentElement);
+                hideSpinner(feedbackContainer); // Usar el contenedor de feedback
                 getVideoInfoBtn.disabled = false;
-                document.getElementById('video-feedback-container').innerHTML = '<div class="alert alert-warning">La consulta está tardando más de lo normal. Verifica tu conexión o intenta con otro video.</div>';
+                feedbackContainer.innerHTML = '<div class="alert alert-warning">La consulta está tardando más de lo normal. Verifica tu conexión o intenta con otro video.</div>';
             }
         }, 15000);
+
         fetch('/api/video_info', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -69,7 +74,7 @@ function initApp() {
         .then(data => {
             didRespond = true;
             clearTimeout(timeoutId);
-            hideSpinner(getVideoInfoBtn.parentElement);
+            hideSpinner(feedbackContainer); // Usar el contenedor de feedback
             getVideoInfoBtn.disabled = false;
             if (data.error) {
                 // Mostrar error detallado
@@ -78,19 +83,18 @@ function initApp() {
                     <small class="text-muted">Fuente: ${data.source || 'Desconocida'}</small><br>
                     <small class="text-muted">Detalles: ${data.details || 'No disponibles'}</small>
                 </div>`;
-                document.getElementById('video-feedback-container').innerHTML = errorMessage;
+                feedbackContainer.innerHTML = errorMessage;
                 return;
             }
-            document.getElementById('video-feedback-container').innerHTML = '';
             populateVideoInfo(data, videoFormatSelect, audioFormatSelect);
             videoInfoContainer.classList.remove('d-none');
         })
         .catch(error => {
             didRespond = true;
             clearTimeout(timeoutId);
-            hideSpinner(getVideoInfoBtn.parentElement);
+            hideSpinner(feedbackContainer); // Usar el contenedor de feedback
             getVideoInfoBtn.disabled = false;
-            document.getElementById('video-feedback-container').innerHTML = `<div class='alert alert-danger'>Error al obtener información del video: ${error}</div>`;
+            feedbackContainer.innerHTML = `<div class='alert alert-danger'>Error al obtener información del video: ${error}</div>`;
         });
     });
 
