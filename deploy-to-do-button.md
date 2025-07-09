@@ -2,7 +2,7 @@
 
 Puedes desplegar esta aplicación en DigitalOcean App Platform con un solo clic utilizando el siguiente botón:
 
-[![Deploy to DigitalOcean](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/yourusername/youtube-playlist-downloader/tree/main)
+[![Deploy to DigitalOcean](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/brahianf1/youtube-playlist-downloader/tree/main)
 
 ## Pasos para el despliegue
 
