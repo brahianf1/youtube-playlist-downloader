@@ -8,8 +8,28 @@ function renderDownloadProgress({
     total,
     speed,
     eta,
-    elapsed
+    elapsed,
+    stage // Nuevo parámetro para la etapa actual
 }) {
+    // Calcular el porcentaje para mostrarlo solo si tenemos bytes totales
+    const displayPercent = percent !== undefined ? Math.min(100, Math.max(0, percent)) : 0;
+    
+    // Determinar clase adicional para la barra según la etapa
+    let progressBarClass = "bg-danger";
+    let stageText = "";
+    
+    // Personalizar la barra según la etapa actual
+    if (stage && stage.toLowerCase().includes('mezclando')) {
+        progressBarClass = "bg-info";
+        stageText = `<div class="text-center small text-info mb-2"><i class="bi bi-arrow-repeat"></i> ${stage}</div>`;
+    } else if (stage && stage.toLowerCase().includes('codificando')) {
+        progressBarClass = "bg-warning";
+        stageText = `<div class="text-center small text-warning mb-2"><i class="bi bi-gear-wide-connected"></i> ${stage}</div>`;
+    } else if (stage && stage.toLowerCase().includes('completada')) {
+        progressBarClass = "bg-success";
+        stageText = `<div class="text-center small text-success mb-2"><i class="bi bi-check-circle"></i> ${stage}</div>`;
+    }
+    
     container.innerHTML = `
         <div class="card shadow-sm border-0 mb-2">
             <div class="card-body py-3">
@@ -17,9 +37,14 @@ function renderDownloadProgress({
                     <i class="bi bi-file-earmark-play fs-4 text-danger me-2"></i>
                     <span class="fw-semibold">${filename || 'Descargando...'}</span>
                 </div>
-                <div class="progress mb-2" style="height: 22px;">
-                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-danger" role="progressbar" style="width: ${percent}%">
-                        ${percent}%
+                ${stageText}
+                <div class="progress mb-2" style="height: 25px; position: relative;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated ${progressBarClass}" 
+                         role="progressbar" 
+                         style="width: ${displayPercent}%; transition: width 0.5s ease-in-out;">
+                    </div>
+                    <div class="position-absolute w-100 text-center" style="line-height: 25px; color: ${displayPercent > 50 ? 'white' : 'black'}; font-weight: bold; mix-blend-mode: difference;">
+                        ${displayPercent}%
                     </div>
                 </div>
                 <div class="row small text-secondary">

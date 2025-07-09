@@ -206,13 +206,7 @@ function initApp() {
                         
                         lastDownloaded = downloaded;
                         
-                        // Mostrar la etapa actual del proceso
-                        let stageInfo = '';
-                        if (status.current_stage) {
-                            stageInfo = `<div class="text-center small text-muted mb-2">${status.current_stage}</div>`;
-                            feedbackContainer.innerHTML = stageInfo;
-                        }
-                        
+                        // Actualizar UI con la información actual
                         window.renderDownloadProgress({
                             container: feedbackContainer,
                             filename: status.current_video || 'Descargando...',
@@ -221,7 +215,8 @@ function initApp() {
                             total,
                             speed: speed ? speed.toFixed(2) : null,
                             eta,
-                            elapsed: elapsedTime
+                            elapsed: elapsedTime,
+                            stage: status.current_stage || null // Pasar la etapa actual a la función de renderizado
                         });
                         
                         // Si la descarga ha terminado
@@ -371,7 +366,8 @@ function initApp() {
                             total,
                             speed: speed ? speed.toFixed(2) : null,
                             eta,
-                            elapsed
+                            elapsed,
+                            stage: status.current_stage || null // Pasar la etapa actual
                         });
                         
                         // Mostrar progreso de videos

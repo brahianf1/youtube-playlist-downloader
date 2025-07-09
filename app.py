@@ -44,6 +44,7 @@ def get_ytdlp_config(download_type, options):
         'buffersize': 1024*1024,           # 1MB de buffer para mejor velocidad
         'nocheckcertificate': True,        # Ignorar problemas con certificados SSL
         'extractor_retries': 3,            # Reintentos para extractores
+        'postprocessor_hooks': [lambda d: postprocessor_hook(d, options.get('download_id'))], # Hook para etapas de post-procesamiento
     }
     
     # Agregar opciones específicas para el tipo de descarga
@@ -80,6 +81,50 @@ def get_ytdlp_config(download_type, options):
             
     return base_config
 
+# Hook para capturar eventos de post-procesamiento
+def postprocessor_hook(d, download_id):
+    if not download_id or download_id not in download_status:
+        return
+        
+    status = download_status[download_id]
+    
+    # Capturar el tipo de postprocesador y su estado
+    pp_type = d.get('postprocessor')
+    action = d.get('status')
+    
+    if pp_type and action:
+        # Actualizar la etapa actual basada en el postprocesador
+        if pp_type == 'MoveFiles' and action == 'started':
+            status['current_stage'] = 'Organizando archivos...'
+        elif pp_type == 'Merger' and action == 'started':
+            status['current_stage'] = 'Mezclando video y audio...'
+            # Establecer explícitamente progreso al 100% durante la mezcla
+            status['current_progress'] = 100
+            status['merging'] = True
+        elif pp_type == 'FFmpegVideoConvertor' and action == 'started':
+            status['current_stage'] = 'Codificando video...'
+            status['current_progress'] = 100
+            status['encoding'] = True
+        elif pp_type == 'FFmpegExtractAudio' and action == 'started':
+            status['current_stage'] = 'Extrayendo audio...'
+            status['current_progress'] = 100
+            status['extracting_audio'] = True
+        elif pp_type == 'FFmpegMetadata' and action == 'started':
+            status['current_stage'] = 'Añadiendo metadatos...'
+        
+        # Marcar como completado cuando finaliza
+        if action == 'finished':
+            if pp_type == 'Merger':
+                status['merging'] = False
+            elif pp_type == 'FFmpegVideoConvertor':
+                status['encoding'] = False
+            elif pp_type == 'FFmpegExtractAudio':
+                status['extracting_audio'] = False
+                
+            # Si este es el último postprocesador, actualizar etapa
+            if all(not status.get(k, False) for k in ['merging', 'encoding', 'extracting_audio']):
+                status['current_stage'] = 'Procesamiento completado'
+
 # Función para manejar el progreso con cálculos más estables
 def progress_hook(d, download_id):
     status = download_status.get(download_id)
@@ -104,8 +149,16 @@ def progress_hook(d, download_id):
     
     # Crear una clave única para esta parte del proceso
     part_key = format_id
-    if '_mp4' in filename or '.mp4.' in filename or '.mkv.' in filename:
+    
+    # Detectar si estamos en fase de mezcla por el nombre del archivo
+    if '_mp4' in filename or '.mp4.' in filename or '.mkv.' in filename or '.temp.' in filename:
         part_key = 'merge'
+        status['current_stage'] = 'Mezclando video y audio...'
+        status['merging'] = True
+    elif 'merging' in d.get('status', '').lower():
+        # También detectar por el status de yt-dlp
+        status['current_stage'] = 'Mezclando video y audio...'
+        status['merging'] = True
     
     # Inicializar la entrada para esta parte si no existe
     if part_key not in status['parts']:
@@ -120,7 +173,13 @@ def progress_hook(d, download_id):
     part = status['parts'][part_key]
     
     status['hook_status'] = d['status']
-    status['current_stage'] = 'Mezclando formatos...' if part_key == 'merge' else f"Descargando {part_key}..."
+    
+    # Establecer la etapa actual si no estamos en un post-procesamiento
+    if not any(status.get(k, False) for k in ['merging', 'encoding', 'extracting_audio']):
+        if part_key == 'merge':
+            status['current_stage'] = 'Mezclando video y audio...'
+        else:
+            status['current_stage'] = f"Descargando {part_key}..."
     
     if d['status'] == 'downloading':
         # Actualizar datos de esta parte
@@ -192,7 +251,11 @@ def progress_hook(d, download_id):
         if total_bytes_all_parts > 0:
             status['total_bytes'] = total_bytes_all_parts
             status['downloaded_bytes'] = downloaded_bytes_all_parts
-            status['current_progress'] = int((downloaded_bytes_all_parts / total_bytes_all_parts) * 100)
+            # Si estamos mezclando, mantener el progreso en 99% hasta que termine
+            if status.get('merging', False) or status.get('encoding', False) or status.get('extracting_audio', False):
+                status['current_progress'] = 99
+            else:
+                status['current_progress'] = int((downloaded_bytes_all_parts / total_bytes_all_parts) * 100)
 
     elif d['status'] == 'finished':
         # Marcar esta parte como completada
@@ -208,6 +271,13 @@ def progress_hook(d, download_id):
                 status['completed_files'].append(filename)
         
         # No incrementamos completed_videos aquí, se hará al final
+        
+        # Si detectamos que todas las partes están descargadas, establecer la etapa de mezcla
+        all_parts_finished = all(p.get('status') == 'finished' for p in status['parts'].values())
+        if all_parts_finished and not status.get('current_stage', '').startswith('Mezclando'):
+            status['current_stage'] = 'Mezclando video y audio...'
+            status['current_progress'] = 99  # Mantener en 99% durante la mezcla
+            status['merging'] = True
     
     elif d['status'] == 'error':
         part['status'] = 'error'
@@ -263,6 +333,9 @@ def download_videos(download_options, download_id):
     download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
     os.makedirs(download_dir, exist_ok=True)
 
+    # Añadir el download_id a las opciones para que los hooks lo tengan disponible
+    download_options['download_id'] = download_id
+    
     # Obtener configuración optimizada de yt-dlp
     base_config = get_ytdlp_config(download_options['type'], download_options)
     
@@ -435,39 +508,50 @@ def start_download():
     return jsonify({'download_id': download_id})
 
 @app.route('/api/status/<download_id>', methods=['GET'])
-def get_status(download_id):
+def download_status_api(download_id):
     if download_id not in download_status:
-        return jsonify({'error': 'ID de descarga no encontrado'}), 404
+        return jsonify({'error': 'ID de descarga no encontrado'})
     
-    status = download_status[download_id]
+    status_data = download_status[download_id].copy()
     
-    # Construir una respuesta simplificada con la información relevante
-    response = {
-        'status': status['status'],
-        'current_stage': status.get('current_stage', 'Procesando...'),
-        'current_progress': status.get('current_progress', 0),
-        'total_bytes': status.get('total_bytes', 0),
-        'downloaded_bytes': status.get('downloaded_bytes', 0),
-        'speed': status.get('speed', 0),
-        'eta': status.get('eta', 0),
-        'elapsed': status.get('elapsed', 0),
-        'current_video': status.get('current_video', 'Procesando...'),
-        'total_videos': status.get('total_videos', 1),
-        'completed_videos': status.get('completed_videos', 0),
-        'errors': status.get('errors', [])
-    }
+    # Comprobar si estamos en fase de post-procesamiento
+    is_postprocessing = False
+    if status_data.get('merging', False) or status_data.get('encoding', False) or status_data.get('extracting_audio', False):
+        is_postprocessing = True
+        
+    # Si hemos terminado de descargar todas las partes pero todavía estamos en postprocesamiento
+    all_parts_finished = all(p.get('status') == 'finished' for p in status_data.get('parts', {}).values()) if status_data.get('parts') else False
     
-    # Si la descarga está completa o con error, incluir los archivos finales
-    if status['status'] in ['completed', 'error'] and status.get('final_files'):
-        response['files'] = [
+    if all_parts_finished and is_postprocessing:
+        # Actualizar la etapa para mostrar el post-procesamiento
+        if not status_data.get('current_stage') or 'Descargando' in status_data.get('current_stage', ''):
+            if status_data.get('merging', False):
+                status_data['current_stage'] = 'Mezclando video y audio...'
+            elif status_data.get('encoding', False):
+                status_data['current_stage'] = 'Codificando video...'
+            elif status_data.get('extracting_audio', False):
+                status_data['current_stage'] = 'Extrayendo audio...'
+        
+        # Mantener el progreso en 99% durante post-procesamiento
+        status_data['current_progress'] = 99
+    
+    # Preparar archivos para la respuesta
+    if 'final_files' in status_data:
+        status_data['files'] = [
             {
-                'name': f.get('name'),
-                'size': f.get('size', 0),
-                'url': f.get('url')
-            } for f in status.get('final_files', [])
+                'name': os.path.basename(f['path']),
+                'size': f['size'],
+                'url': f['url']
+            } for f in status_data['final_files']
         ]
     
-    return jsonify(response)
+    # Eliminar información interna que no queremos exponer en la API
+    keys_to_remove = ['final_files', 'parts', 'speed_history', 'completed_files', 'hook_status']
+    for key in keys_to_remove:
+        if key in status_data:
+            del status_data[key]
+    
+    return jsonify(status_data)
 
 @app.route('/downloads/<download_id>/<path:filename>', methods=['GET'])
 def download_file(download_id, filename):
