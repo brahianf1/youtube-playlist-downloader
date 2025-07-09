@@ -1,0 +1,227 @@
+import os
+import re
+import json
+import threading
+from flask import Flask, render_template, request, jsonify, send_from_directory
+import yt_dlp
+from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
+
+# Cargar variables de entorno
+load_dotenv()
+
+app = Flask(__name__)
+
+# Configuración
+DOWNLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'downloads')
+LOGS_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+
+# Crear directorios si no existen
+os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+os.makedirs(LOGS_FOLDER, exist_ok=True)
+
+# Almacenamiento de estado de descargas
+download_status = {}
+
+# Clase para manejar el progreso de descarga
+class DownloadLogger:
+    def __init__(self, download_id):
+        self.download_id = download_id
+        self.current_video = None
+        self.total_videos = 0
+        self.completed_videos = 0
+        self.current_progress = 0
+        self.update_status()
+    
+    def debug(self, msg):
+        pass
+    
+    def warning(self, msg):
+        pass
+    
+    def error(self, msg):
+        download_status[self.download_id]['errors'].append(msg)
+        self.update_status()
+    
+    def update_status(self):
+        download_status[self.download_id].update({
+            'current_video': self.current_video,
+            'total_videos': self.total_videos,
+            'completed_videos': self.completed_videos,
+            'current_progress': self.current_progress
+        })
+
+# Función para extraer información de la lista de reproducción
+def extract_playlist_info(url):
+    ydl_opts = {
+        'quiet': True,
+        'extract_flat': True,
+        'force_generic_extractor': False,
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+            if 'entries' in info:
+                return {
+                    'title': info.get('title', 'Playlist desconocida'),
+                    'total_videos': len(info['entries']),
+                    'videos': [{
+                        'title': entry.get('title', f'Video {i+1}'),
+                        'id': entry.get('id', ''),
+                        'url': entry.get('url', '')
+                    } for i, entry in enumerate(info['entries'])]
+                }
+            else:
+                return {
+                    'title': info.get('title', 'Video único'),
+                    'total_videos': 1,
+                    'videos': [{
+                        'title': info.get('title', 'Video único'),
+                        'id': info.get('id', ''),
+                        'url': url
+                    }]
+                }
+        except Exception as e:
+            return {'error': str(e)}
+
+# Función para descargar videos
+def download_videos(url, download_id, format_option='video'):
+    logger = DownloadLogger(download_id)
+    
+    # Obtener información de la lista
+    playlist_info = extract_playlist_info(url)
+    
+    if 'error' in playlist_info:
+        download_status[download_id]['status'] = 'error'
+        download_status[download_id]['errors'].append(playlist_info['error'])
+        return
+    
+    download_status[download_id]['playlist_title'] = playlist_info['title']
+    logger.total_videos = playlist_info['total_videos']
+    logger.update_status()
+    
+    # Configurar opciones de descarga
+    if format_option == 'audio':
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'outtmpl': os.path.join(DOWNLOAD_FOLDER, download_id, '%(title)s.%(ext)s'),
+            'logger': logger,
+            'progress_hooks': [lambda d: progress_hook(d, logger)],
+        }
+    else:  # video
+        ydl_opts = {
+            'format': 'best',
+            'outtmpl': os.path.join(DOWNLOAD_FOLDER, download_id, '%(title)s.%(ext)s'),
+            'logger': logger,
+            'progress_hooks': [lambda d: progress_hook(d, logger)],
+        }
+    
+    # Crear directorio para esta descarga
+    os.makedirs(os.path.join(DOWNLOAD_FOLDER, download_id), exist_ok=True)
+    
+    # Iniciar descarga
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            download_status[download_id]['status'] = 'downloading'
+            ydl.download([url])
+        
+        download_status[download_id]['status'] = 'completed'
+        download_status[download_id]['completed_videos'] = logger.total_videos
+    except Exception as e:
+        download_status[download_id]['status'] = 'error'
+        download_status[download_id]['errors'].append(str(e))
+
+# Función para manejar el progreso
+def progress_hook(d, logger):
+    if d['status'] == 'downloading':
+        logger.current_video = d.get('filename', '').split('/')[-1]
+        try:
+            downloaded = d.get('downloaded_bytes', 0)
+            total = d.get('total_bytes', 0) or d.get('total_bytes_estimate', 0)
+            if total > 0:
+                logger.current_progress = int(downloaded / total * 100)
+            logger.update_status()
+        except:
+            pass
+    elif d['status'] == 'finished':
+        logger.completed_videos += 1
+        logger.current_progress = 0
+        logger.update_status()
+
+# Rutas de la aplicación
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/download', methods=['POST'])
+def start_download():
+    data = request.json
+    url = data.get('url', '')
+    format_option = data.get('format', 'video')
+    
+    # Validar URL
+    if not url or not re.match(r'^(https?\:\/\/)?(www\.youtube\.com|youtu\.?be)\/.+$', url):
+        return jsonify({'error': 'URL de YouTube inválida'}), 400
+    
+    # Generar ID único para esta descarga
+    download_id = secure_filename(f"{format_option}_{os.urandom(4).hex()}")
+    
+    # Inicializar estado
+    download_status[download_id] = {
+        'id': download_id,
+        'url': url,
+        'format': format_option,
+        'status': 'starting',
+        'playlist_title': '',
+        'current_video': None,
+        'total_videos': 0,
+        'completed_videos': 0,
+        'current_progress': 0,
+        'errors': []
+    }
+    
+    # Iniciar descarga en un hilo separado
+    thread = threading.Thread(target=download_videos, args=(url, download_id, format_option))
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({'download_id': download_id})
+
+@app.route('/api/status/<download_id>', methods=['GET'])
+def get_status(download_id):
+    if download_id not in download_status:
+        return jsonify({'error': 'ID de descarga no encontrado'}), 404
+    
+    return jsonify(download_status[download_id])
+
+@app.route('/downloads/<download_id>/<filename>', methods=['GET'])
+def download_file(download_id, filename):
+    return send_from_directory(os.path.join(DOWNLOAD_FOLDER, download_id), filename)
+
+@app.route('/api/downloads/<download_id>', methods=['GET'])
+def list_downloads(download_id):
+    download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
+    if not os.path.exists(download_dir):
+        return jsonify({'error': 'Directorio de descarga no encontrado'}), 404
+    
+    files = []
+    for filename in os.listdir(download_dir):
+        file_path = os.path.join(download_dir, filename)
+        if os.path.isfile(file_path):
+            files.append({
+                'name': filename,
+                'size': os.path.getsize(file_path),
+                'url': f'/downloads/{download_id}/{filename}'
+            })
+    
+    return jsonify({'files': files})
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=os.environ.get('DEBUG', 'False').lower() == 'true')

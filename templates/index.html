@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Descargador de Listas de YouTube</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .main-container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .card {
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            border: none;
+        }
+        .card-header {
+            background-color: #ff0000;
+            color: white;
+            border-radius: 10px 10px 0 0 !important;
+            font-weight: bold;
+        }
+        .btn-primary {
+            background-color: #ff0000;
+            border-color: #ff0000;
+        }
+        .btn-primary:hover, .btn-primary:focus {
+            background-color: #cc0000;
+            border-color: #cc0000;
+        }
+        .progress {
+            height: 25px;
+            border-radius: 5px;
+        }
+        .download-item {
+            animation: fadeIn 0.5s;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .file-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .youtube-logo {
+            color: #ff0000;
+            font-size: 2.5rem;
+            margin-right: 10px;
+        }
+        .header-title {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container main-container py-5">
+        <div class="header-title">
+            <i class="bi bi-youtube youtube-logo"></i>
+            <h1 class="text-center">Descargador de Listas de YouTube</h1>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-link-45deg"></i> Ingresa la URL de la lista de reproducción
+            </div>
+            <div class="card-body">
+                <form id="download-form">
+                    <div class="mb-3">
+                        <label for="playlist-url" class="form-label">URL de la lista de reproducción:</label>
+                        <input type="url" class="form-control" id="playlist-url" 
+                               placeholder="https://www.youtube.com/playlist?list=..." required>
+                        <div class="form-text">Ingresa la URL completa de una lista de reproducción de YouTube.</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Formato de descarga:</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="format" id="format-video" value="video" checked>
+                            <label class="form-check-label" for="format-video">
+                                <i class="bi bi-film"></i> Video completo
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="format" id="format-audio" value="audio">
+                            <label class="form-check-label" for="format-audio">
+                                <i class="bi bi-music-note-beamed"></i> Solo audio (MP3)
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-download"></i> Iniciar Descarga
+                    </button>
+                </form>
+            </div>
+        </div>
+        
+        <div id="downloads-container">
+            <!-- Aquí se mostrarán las descargas activas -->
+        </div>
+    </div>
+    
+    <!-- Plantilla para elementos de descarga -->
+    <template id="download-template">
+        <div class="card download-item" data-download-id="">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span class="playlist-title">Nombre de la lista</span>
+                <span class="badge bg-primary status-badge">Iniciando</span>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="current-video">Preparando descarga...</span>
+                        <span class="video-count">0 / 0 videos</span>
+                    </div>
+                    <div class="progress mb-2">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+                
+                <div class="overall-progress mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span>Progreso general:</span>
+                        <span class="overall-percentage">0%</span>
+                    </div>
+                    <div class="progress">
+                        <div class="progress-bar bg-success overall-progress-bar" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+                
+                <div class="download-errors alert alert-danger d-none">
+                    <strong>Errores:</strong>
+                    <ul class="error-list mb-0"></ul>
+                </div>
+                
+                <div class="download-complete d-none">
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle-fill"></i> ¡Descarga completada!
+                    </div>
+                    <div class="file-list list-group mb-3">
+                        <!-- Aquí se listarán los archivos descargados -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const downloadForm = document.getElementById('download-form');
+            const downloadsContainer = document.getElementById('downloads-container');
+            const downloadTemplate = document.getElementById('download-template');
+            
+            // Mapa para almacenar los intervalos de actualización
+            const statusIntervals = {};
+            
+            downloadForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const playlistUrl = document.getElementById('playlist-url').value.trim();
+                const formatOption = document.querySelector('input[name="format"]:checked').value;
+                
+                if (!playlistUrl) {
+                    alert('Por favor, ingresa una URL válida de YouTube');
+                    return;
+                }
+                
+                // Crear elemento de descarga
+                const downloadElement = createDownloadElement();
+                downloadsContainer.prepend(downloadElement);
+                
+                // Iniciar descarga
+                startDownload(playlistUrl, formatOption, downloadElement);
+            });
+            
+            function createDownloadElement() {
+                const clone = document.importNode(downloadTemplate.content, true);
+                const downloadElement = clone.querySelector('.download-item');
+                return downloadElement;
+            }
+            
+            function startDownload(url, format, downloadElement) {
+                fetch('/api/download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        url: url,
+                        format: format
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        showError(downloadElement, data.error);
+                        return;
+                    }
+                    
+                    const downloadId = data.download_id;
+                    downloadElement.dataset.downloadId = downloadId;
+                    
+                    // Iniciar actualización de estado
+                    statusIntervals[downloadId] = setInterval(() => {
+                        updateDownloadStatus(downloadId, downloadElement);
+                    }, 1000);
+                })
+                .catch(error => {
+                    showError(downloadElement, 'Error al iniciar la descarga: ' + error.message);
+                });
+            }
+            
+            function updateDownloadStatus(downloadId, downloadElement) {
+                fetch(`/api/status/${downloadId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            showError(downloadElement, data.error);
+                            clearInterval(statusIntervals[downloadId]);
+                            return;
+                        }
+                        
+                        // Actualizar información de la descarga
+                        updateDownloadElement(downloadElement, data);
+                        
+                        // Si la descarga ha terminado, detener las actualizaciones
+                        if (data.status === 'completed' || data.status === 'error') {
+                            clearInterval(statusIntervals[downloadId]);
+                            
+                            if (data.status === 'completed') {
+                                showDownloadedFiles(downloadId, downloadElement);
+                            }
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error al actualizar estado:', error);
+                    });
+            }
+            
+            function updateDownloadElement(element, data) {
+                // Actualizar título de la lista
+                if (data.playlist_title) {
+                    element.querySelector('.playlist-title').textContent = data.playlist_title;
+                }
+                
+                // Actualizar estado
+                const statusBadge = element.querySelector('.status-badge');
+                statusBadge.textContent = getStatusText(data.status);
+                statusBadge.className = 'badge status-badge ' + getStatusClass(data.status);
+                
+                // Actualizar video actual
+                if (data.current_video) {
+                    element.querySelector('.current-video').textContent = 
+                        `Descargando: ${data.current_video}`;
+                }
+                
+                // Actualizar contador de videos
+                element.querySelector('.video-count').textContent = 
+                    `${data.completed_videos} / ${data.total_videos} videos`;
+                
+                // Actualizar progreso actual
+                const progressBar = element.querySelector('.progress-bar');
+                progressBar.style.width = `${data.current_progress}%`;
+                
+                // Actualizar progreso general
+                const overallPercentage = data.total_videos > 0 ? 
+                    Math.round((data.completed_videos / data.total_videos) * 100) : 0;
+                element.querySelector('.overall-percentage').textContent = `${overallPercentage}%`;
+                element.querySelector('.overall-progress-bar').style.width = `${overallPercentage}%`;
+                
+                // Mostrar errores si existen
+                if (data.errors && data.errors.length > 0) {
+                    const errorsContainer = element.querySelector('.download-errors');
+                    const errorList = element.querySelector('.error-list');
+                    errorsContainer.classList.remove('d-none');
+                    errorList.innerHTML = '';
+                    
+                    data.errors.forEach(error => {
+                        const li = document.createElement('li');
+                        li.textContent = error;
+                        errorList.appendChild(li);
+                    });
+                }
+            }
+            
+            function showDownloadedFiles(downloadId, element) {
+                fetch(`/api/downloads/${downloadId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            return;
+                        }
+                        
+                        const completeSection = element.querySelector('.download-complete');
+                        const fileList = element.querySelector('.file-list');
+                        completeSection.classList.remove('d-none');
+                        fileList.innerHTML = '';
+                        
+                        data.files.forEach(file => {
+                            const fileItem = document.createElement('a');
+                            fileItem.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+                            fileItem.href = file.url;
+                            fileItem.setAttribute('download', '');
+                            
+                            const fileIcon = document.createElement('i');
+                            fileIcon.className = file.name.endsWith('.mp3') ? 
+                                'bi bi-file-earmark-music me-2' : 'bi bi-file-earmark-play me-2';
+                            
+                            const fileName = document.createElement('span');
+                            fileName.textContent = file.name;
+                            
+                            const fileSize = document.createElement('span');
+                            fileSize.className = 'badge bg-secondary';
+                            fileSize.textContent = formatFileSize(file.size);
+                            
+                            fileItem.appendChild(fileIcon);
+                            fileItem.appendChild(fileName);
+                            fileItem.appendChild(fileSize);
+                            fileList.appendChild(fileItem);
+                        });
+                    })
+                    .catch(error => {
+                        console.error('Error al obtener archivos:', error);
+                    });
+            }
+            
+            function showError(element, errorMessage) {
+                const errorsContainer = element.querySelector('.download-errors');
+                const errorList = element.querySelector('.error-list');
+                errorsContainer.classList.remove('d-none');
+                
+                const li = document.createElement('li');
+                li.textContent = errorMessage;
+                errorList.appendChild(li);
+                
+                element.querySelector('.status-badge').textContent = 'Error';
+                element.querySelector('.status-badge').className = 'badge bg-danger status-badge';
+            }
+            
+            function getStatusText(status) {
+                switch (status) {
+                    case 'starting': return 'Iniciando';
+                    case 'downloading': return 'Descargando';
+                    case 'completed': return 'Completado';
+                    case 'error': return 'Error';
+                    default: return 'Desconocido';
+                }
+            }
+            
+            function getStatusClass(status) {
+                switch (status) {
+                    case 'starting': return 'bg-secondary';
+                    case 'downloading': return 'bg-primary';
+                    case 'completed': return 'bg-success';
+                    case 'error': return 'bg-danger';
+                    default: return 'bg-secondary';
+                }
+            }
+            
+            function formatFileSize(bytes) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+        });
+    </script>
+</body>
+</html>

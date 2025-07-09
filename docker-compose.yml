@@ -1,0 +1,14 @@
+version: '3'
+
+services:
+  youtube-dl-web:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+    environment:
+      - PORT=8000
+      - DEBUG=False
+    restart: unless-stopped
