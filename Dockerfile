@@ -17,6 +17,9 @@ RUN mkdir -p /app/downloads /app/logs
 # Instalar dependencias de Python
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Actualizar yt-dlp a la última versión
+RUN pip install -U yt-dlp
+
 # Exponer puerto
 EXPOSE 8000
 
