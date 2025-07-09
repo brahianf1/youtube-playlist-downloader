@@ -1,0 +1,320 @@
+// app.js - Lógica principal modularizada para Youtube-dl
+
+// Utilidades de UI
+function showSpinner(container, message = 'Cargando...') {
+    container.innerHTML = `<div class="d-flex align-items-center justify-content-center py-4">
+        <div class="spinner-border text-danger me-2" role="status"></div>
+        <span>${message}</span>
+    </div>`;
+}
+function hideSpinner(container) {
+    container.innerHTML = '';
+}
+
+// Formateo de bytes y tiempo
+function formatFileSize(bytes) {
+    if (!bytes || bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+function formatTime(seconds) {
+    if (!seconds || seconds < 0) return '--:--';
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+// Estado global de descargas
+const statusIntervals = {};
+
+// Inicialización principal
+function initApp() {
+    const playlistDownloadForm = document.getElementById('playlist-download-form');
+    const singleVideoForm = document.getElementById('single-video-form');
+    const downloadsContainer = document.getElementById('downloads-container');
+    const downloadTemplate = document.getElementById('download-template');
+    const getVideoInfoBtn = document.getElementById('get-video-info-btn');
+    const videoInfoContainer = document.getElementById('video-info-container');
+    const startSingleDownloadBtn = document.getElementById('start-single-download-btn');
+    const videoFormatSelect = document.getElementById('video-format-select');
+    const audioFormatSelect = document.getElementById('audio-format-select');
+
+    // Feedback de carga al obtener info del video
+    getVideoInfoBtn.addEventListener('click', function() {
+        const videoUrl = document.getElementById('video-url').value.trim();
+        if (!videoUrl) {
+            alert('Por favor, ingresa la URL de un video.');
+            return;
+        }
+        videoInfoContainer.classList.add('d-none');
+        showSpinner(getVideoInfoBtn.parentElement, 'Obteniendo información del video...');
+        getVideoInfoBtn.disabled = true;
+        fetch('/api/video_info', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: videoUrl })
+        })
+        .then(response => response.json())
+        .then(data => {
+            hideSpinner(getVideoInfoBtn.parentElement);
+            getVideoInfoBtn.disabled = false;
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
+            }
+            populateVideoInfo(data, videoFormatSelect, audioFormatSelect);
+            videoInfoContainer.classList.remove('d-none');
+        })
+        .catch(error => {
+            hideSpinner(getVideoInfoBtn.parentElement);
+            getVideoInfoBtn.disabled = false;
+            alert('Error al obtener información del video: ' + error);
+        });
+    });
+
+    // Mejor feedback al iniciar descarga de video único
+    startSingleDownloadBtn.addEventListener('click', function() {
+        const videoUrl = document.getElementById('video-url').value.trim();
+        const videoFormat = document.getElementById('video-format-select').value;
+        const audioFormat = document.getElementById('audio-format-select').value;
+        const feedbackContainer = document.getElementById('video-feedback-container');
+        feedbackContainer.innerHTML = '';
+        if (!videoUrl || !videoFormat || !audioFormat) {
+            feedbackContainer.innerHTML = '<div class="alert alert-warning">Por favor, selecciona los formatos y la URL antes de descargar.</div>';
+            return;
+        }
+        showSpinner(feedbackContainer, 'Preparando descarga...');
+        startSingleDownloadBtn.disabled = true;
+        fetch('/api/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                url: videoUrl, 
+                type: 'single', 
+                video_format_id: videoFormat,
+                audio_format_id: audioFormat
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                feedbackContainer.innerHTML = `<div class='alert alert-danger'>${data.error}</div>`;
+                startSingleDownloadBtn.disabled = false;
+                return;
+            }
+            // Iniciar feedback profesional de progreso
+            const downloadId = data.download_id;
+            let lastDownloaded = 0;
+            let lastTime = Date.now();
+            let elapsed = 0;
+            statusIntervals[downloadId] = setInterval(() => {
+                fetch(`/api/status/${downloadId}`)
+                    .then(r => r.json())
+                    .then(status => {
+                        if (status.error) {
+                            feedbackContainer.innerHTML = `<div class='alert alert-danger'>${status.error}</div>`;
+                            clearInterval(statusIntervals[downloadId]);
+                            startSingleDownloadBtn.disabled = false;
+                            return;
+                        }
+                        // Calcular métricas
+                        const percent = status.current_progress || 0;
+                        const downloaded = status.downloaded_bytes || 0;
+                        const total = status.total_bytes || 0;
+                        const now = Date.now();
+                        elapsed = (elapsed === 0 && percent > 0) ? 1 : Math.floor((now - lastTime) / 1000);
+                        let speed = 0, eta = 0;
+                        if (downloaded > 0 && elapsed > 0) {
+                            speed = ((downloaded - lastDownloaded) / 1024 / 1024) / (elapsed || 1);
+                            eta = speed > 0 ? ((total - downloaded) / 1024 / 1024) / speed : 0;
+                        }
+                        lastDownloaded = downloaded;
+                        lastTime = now;
+                        window.renderDownloadProgress({
+                            container: feedbackContainer,
+                            filename: status.current_video || 'Descargando...',
+                            percent,
+                            downloaded,
+                            total,
+                            speed: speed ? speed.toFixed(2) : null,
+                            eta,
+                            elapsed
+                        });
+                        if (status.status === 'completed' || status.status === 'partial' || status.status === 'error') {
+                            clearInterval(statusIntervals[downloadId]);
+                            startSingleDownloadBtn.disabled = false;
+                            if (status.status === 'completed') {
+                                feedbackContainer.innerHTML += '<div class="alert alert-success mt-2">¡Descarga completada!</div>';
+                            } else if (status.status === 'partial') {
+                                feedbackContainer.innerHTML += '<div class="alert alert-warning mt-2">Descarga parcial. Algunos archivos pueden faltar.</div>';
+                            } else if (status.status === 'error') {
+                                feedbackContainer.innerHTML += '<div class="alert alert-danger mt-2">Ocurrió un error durante la descarga.</div>';
+                            }
+                        }
+                    });
+            }, 1000);
+        })
+        .catch(error => {
+            feedbackContainer.innerHTML = `<div class='alert alert-danger'>${error}</div>`;
+            startSingleDownloadBtn.disabled = false;
+        });
+    });
+
+    // Mejor feedback al iniciar descarga de playlist
+    playlistDownloadForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        const playlistUrl = document.getElementById('playlist-url').value.trim();
+        const formatOption = document.querySelector('input[name="playlist-format"]:checked').value;
+        const downloadsContainer = document.getElementById('downloads-container');
+        if (!playlistUrl) {
+            downloadsContainer.innerHTML = '<div class="alert alert-warning">Por favor, ingresa una URL válida de YouTube para la lista.</div>';
+            return;
+        }
+        // Crear un contenedor visual para la descarga
+        const feedbackContainer = document.createElement('div');
+        downloadsContainer.prepend(feedbackContainer);
+        showSpinner(feedbackContainer, 'Preparando descarga de lista...');
+        fetch('/api/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: playlistUrl, format: formatOption, type: 'playlist' })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                feedbackContainer.innerHTML = `<div class='alert alert-danger'>${data.error}</div>`;
+                return;
+            }
+            // Iniciar feedback profesional de progreso para playlist
+            const downloadId = data.download_id;
+            let lastDownloaded = 0;
+            let lastTime = Date.now();
+            let elapsed = 0;
+            statusIntervals[downloadId] = setInterval(() => {
+                fetch(`/api/status/${downloadId}`)
+                    .then(r => r.json())
+                    .then(status => {
+                        if (status.error) {
+                            feedbackContainer.innerHTML = `<div class='alert alert-danger'>${status.error}</div>`;
+                            clearInterval(statusIntervals[downloadId]);
+                            return;
+                        }
+                        // Calcular métricas
+                        const percent = status.total_videos > 0 ? Math.round((status.completed_videos / status.total_videos) * 100) : 0;
+                        const downloaded = status.downloaded_bytes || 0;
+                        const total = status.total_bytes || 0;
+                        const now = Date.now();
+                        elapsed = (elapsed === 0 && percent > 0) ? 1 : Math.floor((now - lastTime) / 1000);
+                        let speed = 0, eta = 0;
+                        if (downloaded > 0 && elapsed > 0) {
+                            speed = ((downloaded - lastDownloaded) / 1024 / 1024) / (elapsed || 1);
+                            eta = speed > 0 ? ((total - downloaded) / 1024 / 1024) / speed : 0;
+                        }
+                        lastDownloaded = downloaded;
+                        lastTime = now;
+                        window.renderDownloadProgress({
+                            container: feedbackContainer,
+                            filename: status.current_video || 'Descargando...',
+                            percent,
+                            downloaded,
+                            total,
+                            speed: speed ? speed.toFixed(2) : null,
+                            eta,
+                            elapsed
+                        });
+                        // Mostrar progreso de videos
+                        if (status.total_videos > 1) {
+                            feedbackContainer.innerHTML += `<div class='text-center small text-muted mt-1'>Videos completados: <b>${status.completed_videos}</b> de <b>${status.total_videos}</b></div>`;
+                        }
+                        if (status.status === 'completed' || status.status === 'partial' || status.status === 'error') {
+                            clearInterval(statusIntervals[downloadId]);
+                            if (status.status === 'completed') {
+                                feedbackContainer.innerHTML += '<div class="alert alert-success mt-2">¡Descarga de lista completada!</div>';
+                            } else if (status.status === 'partial') {
+                                feedbackContainer.innerHTML += '<div class="alert alert-warning mt-2">Descarga parcial. Algunos videos pueden faltar.</div>';
+                            } else if (status.status === 'error') {
+                                feedbackContainer.innerHTML += '<div class="alert alert-danger mt-2">Ocurrió un error durante la descarga.</div>';
+                            }
+                        }
+                    });
+            }, 1000);
+        })
+        .catch(error => {
+            feedbackContainer.innerHTML = `<div class='alert alert-danger'>${error}</div>`;
+        });
+    });
+
+    // ...El resto de la lógica se modularizará aquí (descarga de lista de reproducción, etc)...
+}
+
+// Modularización de la función para poblar info de video
+function populateVideoInfo(data, videoSelect, audioSelect) {
+    document.getElementById('video-title').textContent = data.title;
+    videoSelect.innerHTML = '';
+    audioSelect.innerHTML = '';
+    // ...igual que antes, pero modularizado...
+    const videoFormats = data.formats
+        .filter(f => f.vcodec !== 'none' && f.acodec === 'none')
+        .sort((a, b) => {
+            const heightA = parseInt((a.resolution || '').split('x')[1]) || 0;
+            const heightB = parseInt((b.resolution || '').split('x')[1]) || 0;
+            return heightB - heightA;
+        });
+    videoFormats.forEach(f => {
+        const option = document.createElement('option');
+        option.value = f.format_id;
+        const height = (f.resolution || '').split('x')[1] || 'N/A';
+        const fps = f.fps ? `${f.fps}fps` : '';
+        const size = f.filesize_approx ? formatFileSize(f.filesize_approx) : 'N/A';
+        option.textContent = `${height}p ${fps} - ${f.ext} - ${size}`;
+        videoSelect.appendChild(option);
+    });
+    if (videoFormats.length === 0) {
+        data.formats
+            .filter(f => f.vcodec !== 'none' && f.acodec !== 'none')
+            .sort((a, b) => {
+                const heightA = parseInt((a.resolution || '').split('x')[1]) || 0;
+                const heightB = parseInt((b.resolution || '').split('x')[1]) || 0;
+                return heightB - heightA;
+            })
+            .forEach(f => {
+                const option = document.createElement('option');
+                option.value = f.format_id;
+                const height = (f.resolution || '').split('x')[1] || 'N/A';
+                const fps = f.fps ? `${f.fps}fps` : '';
+                const size = f.filesize_approx ? formatFileSize(f.filesize_approx) : 'N/A';
+                option.textContent = `${height}p ${fps} - ${f.ext} - ${size} (con audio)`;
+                videoSelect.appendChild(option);
+            });
+    }
+    const audioFormats = data.formats
+        .filter(f => f.acodec !== 'none' && f.vcodec === 'none')
+        .sort((a, b) => (b.abr || 0) - (a.abr || 0));
+    audioFormats.forEach(f => {
+        const option = document.createElement('option');
+        option.value = f.format_id;
+        const abr = f.abr ? `${f.abr}kbps` : 'N/A';
+        const size = f.filesize_approx ? formatFileSize(f.filesize_approx) : 'N/A';
+        option.textContent = `${f.ext} - ${abr} - ${size}`;
+        audioSelect.appendChild(option);
+    });
+    if (videoSelect.children.length === 0) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'No hay formatos de video disponibles';
+        option.disabled = true;
+        videoSelect.appendChild(option);
+    }
+    if (audioSelect.children.length === 0) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'No hay formatos de audio disponibles';
+        option.disabled = true;
+        audioSelect.appendChild(option);
+    }
+}
+
+// Inicializar la app al cargar
+window.addEventListener('DOMContentLoaded', initApp);
