@@ -23,7 +23,18 @@ O alternativamente:
 
 ## Despliegue en DigitalOcean
 
-### Opción 1: Usando App Platform
+### Opción 1: Despliegue con un solo clic
+
+[![Deploy to DigitalOcean](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/brahianf1/youtube-playlist-downloader/tree/main)
+
+1. Haz clic en el botón "Deploy to DigitalOcean" de arriba
+2. Inicia sesión en tu cuenta de DigitalOcean (o crea una nueva)
+3. La configuración se cargará automáticamente desde el archivo `.do/deploy.template.yaml`
+4. Haz clic en "Next" y luego en "Create Resources"
+5. Espera a que se complete el despliegue
+6. ¡Listo! Tu aplicación estará disponible en la URL proporcionada por DigitalOcean
+
+### Opción 2: Usando App Platform manualmente
 
 1. Crea una cuenta en [DigitalOcean](https://www.digitalocean.com/) si aún no tienes una
 2. Haz clic en "Create" y selecciona "Apps"
@@ -34,7 +45,7 @@ O alternativamente:
    - Puerto HTTP: 8000
 5. Haz clic en "Next" y luego en "Create Resources"
 
-### Opción 2: Usando Droplets con Docker
+### Opción 3: Usando Droplets con Docker
 
 1. Crea un Droplet en DigitalOcean (recomendado: Ubuntu 20.04 LTS)
 2. Conéctate a tu Droplet mediante SSH

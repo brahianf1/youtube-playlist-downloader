@@ -22,3 +22,7 @@ Si deseas personalizar la configuración de la aplicación, puedes hacerlo a tra
 3. Haz clic en "Settings" y luego en "Edit" en la sección "Environment Variables"
 4. Añade o modifica las variables de entorno según sea necesario
 5. Haz clic en "Save" y luego en "Deploy Changes"
+
+## Nota importante
+
+Para que el botón de despliegue funcione correctamente, este repositorio debe contener un archivo `.do/deploy.template.yaml` con la configuración necesaria para App Platform. Este archivo ya está incluido en el repositorio.
