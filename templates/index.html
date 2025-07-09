@@ -71,41 +71,54 @@
             <h1 class="text-center">Descargador de Listas de YouTube</h1>
         </div>
         
-        <div class="card">
-            <div class="card-header">
-                <i class="bi bi-link-45deg"></i> Ingresa la URL de la lista de reproducción
-            </div>
-            <div class="card-body">
-                <form id="download-form">
-                    <div class="mb-3">
-                        <label for="playlist-url" class="form-label">URL de la lista de reproducción:</label>
-                        <input type="url" class="form-control" id="playlist-url" 
-                               placeholder="https://www.youtube.com/playlist?list=..." required>
-                        <div class="form-text">Ingresa la URL completa de una lista de reproducción de YouTube.</div>
+        <ul class="nav nav-tabs" id="myTab" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="playlist-tab" data-bs-toggle="tab" data-bs-target="#playlist-downloader" type="button" role="tab" aria-controls="playlist-downloader" aria-selected="true">Descargar Lista</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="single-video-tab" data-bs-toggle="tab" data-bs-target="#single-video-downloader" type="button" role="tab" aria-controls="single-video-downloader" aria-selected="false">Descargar Video Único</button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="myTabContent">
+            <div class="tab-pane fade show active" id="playlist-downloader" role="tabpanel" aria-labelledby="playlist-tab">
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <i class="bi bi-link-45deg"></i> Ingresa la URL de la lista de reproducción
                     </div>
-                    
-                    <div class="mb-3">
-                        <label class="form-label">Formato de descarga:</label>
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="format" id="format-video" value="video" checked>
-                            <label class="form-check-label" for="format-video">
-                                <i class="bi bi-film"></i> Video completo
-                            </label>
-                        </div>
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="format" id="format-audio" value="audio">
-                            <label class="form-check-label" for="format-audio">
-                                <i class="bi bi-music-note-beamed"></i> Solo audio (MP3)
-                            </label>
-                        </div>
+                    <div class="card-body">
+                        <form id="playlist-download-form">
+                            <div class="mb-3">
+                                <label for="playlist-url" class="form-label">URL de la lista de reproducción:</label>
+                                <input type="url" class="form-control" id="playlist-url" 
+                                       placeholder="https://www.youtube.com/playlist?list=..." required>
+                                <div class="form-text">Ingresa la URL completa de una lista de reproducción de YouTube.</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Formato de descarga:</label>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="playlist-format" id="format-video" value="video" checked>
+                                    <label class="form-check-label" for="format-video">
+                                        <i class="bi bi-film"></i> Video completo
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="playlist-format" id="format-audio" value="audio">
+                                    <label class="form-check-label" for="format-audio">
+                                        <i class="bi bi-music-note-beamed"></i> Solo audio (MP3)
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-primary w-100">
+                                <i class="bi bi-download"></i> Iniciar Descarga de Lista
+                            </button>
+                        </form>
                     </div>
-                    
-                    <button type="submit" class="btn btn-primary w-100">
-                        <i class="bi bi-download"></i> Iniciar Descarga
-                    </button>
-                </form>
+                </div>
             </div>
-        </div>
+            <div class="tab-pane fade" id="single-video-downloader" role=
         
         <div id="downloads-container">
             <!-- Aquí se mostrarán las descargas activas -->
@@ -163,31 +176,99 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            const downloadForm = document.getElementById('download-form');
+            const playlistDownloadForm = document.getElementById('playlist-download-form');
+            const singleVideoForm = document.getElementById('single-video-form');
             const downloadsContainer = document.getElementById('downloads-container');
             const downloadTemplate = document.getElementById('download-template');
-            
+            const getVideoInfoBtn = document.getElementById('get-video-info-btn');
+            const videoInfoContainer = document.getElementById('video-info-container');
+            const startSingleDownloadBtn = document.getElementById('start-single-download-btn');
+
             // Mapa para almacenar los intervalos de actualización
             const statusIntervals = {};
-            
-            downloadForm.addEventListener('submit', function(e) {
+
+            playlistDownloadForm.addEventListener('submit', function(e) {
                 e.preventDefault();
                 
                 const playlistUrl = document.getElementById('playlist-url').value.trim();
-                const formatOption = document.querySelector('input[name="format"]:checked').value;
+                const formatOption = document.querySelector('input[name="playlist-format"]:checked').value;
                 
                 if (!playlistUrl) {
-                    alert('Por favor, ingresa una URL válida de YouTube');
+                    alert('Por favor, ingresa una URL válida de YouTube para la lista.');
                     return;
                 }
                 
-                // Crear elemento de descarga
                 const downloadElement = createDownloadElement();
                 downloadsContainer.prepend(downloadElement);
                 
-                // Iniciar descarga
-                startDownload(playlistUrl, formatOption, downloadElement);
+                startDownload({ url: playlistUrl, format: formatOption, type: 'playlist' }, downloadElement);
             });
+
+            getVideoInfoBtn.addEventListener('click', function() {
+                const videoUrl = document.getElementById('video-url').value.trim();
+                if (!videoUrl) {
+                    alert('Por favor, ingresa la URL de un video.');
+                    return;
+                }
+
+                fetch('/api/video_info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: videoUrl })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Error: ' + data.error);
+                        return;
+                    }
+                    populateVideoInfo(data);
+                    videoInfoContainer.classList.remove('d-none');
+                })
+                .catch(error => alert('Error al obtener información del video: ' + error));
+            });
+
+            startSingleDownloadBtn.addEventListener('click', function() {
+                const videoUrl = document.getElementById('video-url').value.trim();
+                const videoFormat = document.getElementById('video-format-select').value;
+                const audioFormat = document.getElementById('audio-format-select').value;
+
+                const downloadElement = createDownloadElement();
+                downloadsContainer.prepend(downloadElement);
+
+                startDownload({ 
+                    url: videoUrl, 
+                    type: 'single', 
+                    video_format_id: videoFormat,
+                    audio_format_id: audioFormat
+                }, downloadElement);
+            });
+
+            function populateVideoInfo(data) {
+                document.getElementById('video-title').textContent = data.title;
+                const videoSelect = document.getElementById('video-format-select');
+                const audioSelect = document.getElementById('audio-format-select');
+                videoSelect.innerHTML = '';
+                audioSelect.innerHTML = '';
+
+                data.formats.forEach(f => {
+                    const option = document.createElement('option');
+                    option.value = f.format_id;
+                    option.textContent = `${f.ext} - ${f.resolution} (${f.fps}fps) - ${formatFileSize(f.filesize_approx)}`;
+                    if (f.vcodec !== 'none') {
+                        videoSelect.appendChild(option);
+                    }
+                });
+
+                data.formats.forEach(f => {
+                    const option = document.createElement('option');
+                    option.value = f.format_id;
+                    option.textContent = `${f.ext} - ${f.abr}kbps - ${formatFileSize(f.filesize_approx)}`;
+                    if (f.acodec !== 'none' && f.vcodec === 'none') {
+                        audioSelect.appendChild(option);
+                    }
+                });
+            }
             
             function createDownloadElement() {
                 const clone = document.importNode(downloadTemplate.content, true);
@@ -195,16 +276,13 @@
                 return downloadElement;
             }
             
-            function startDownload(url, format, downloadElement) {
+            function startDownload(downloadOptions, downloadElement) {
                 fetch('/api/download', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
-                        url: url,
-                        format: format
-                    })
+                    body: JSON.stringify(downloadOptions)
                 })
                 .then(response => response.json())
                 .then(data => {

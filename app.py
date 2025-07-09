@@ -94,50 +94,54 @@ def extract_playlist_info(url):
             return {'error': str(e)}
 
 # Función para descargar videos
-def download_videos(url, download_id, format_option='video'):
+def download_videos(download_options, download_id):
     logger = DownloadLogger(download_id)
-    
-    # Obtener información de la lista
+    url = download_options['url']
+
+    # Obtener información de la lista/video
     playlist_info = extract_playlist_info(url)
-    
     if 'error' in playlist_info:
         download_status[download_id]['status'] = 'error'
         download_status[download_id]['errors'].append(playlist_info['error'])
         return
-    
+
     download_status[download_id]['playlist_title'] = playlist_info['title']
     logger.total_videos = playlist_info['total_videos']
     logger.update_status()
-    
+
     # Configurar opciones de descarga
-    # Opciones comunes para ambos formatos
     common_opts = {
         'outtmpl': os.path.join(DOWNLOAD_FOLDER, download_id, '%(title)s.%(ext)s'),
         'logger': logger,
         'progress_hooks': [lambda d: progress_hook(d, logger)],
-        'retries': 10,                # Aumentar el número de reintentos
-        'fragment_retries': 10,       # Aumentar reintentos para fragmentos
+        'retries': 10,
+        'fragment_retries': 10,
         'skip_unavailable_fragments': True,
-        'ignoreerrors': True,         # Ignorar errores y continuar
-        'extractor_retries': 10,      # Reintentos específicos para extractores
-        'socket_timeout': 30,         # Aumentar el tiempo de espera del socket
-        'external_downloader_args': ['--max-retries', '10'],  # Para aria2 si está disponible
-        'playlist_items': '1-1000',   # Limitar a 1000 videos por lista para evitar problemas
+        'ignoreerrors': True,
+        'extractor_retries': 10,
+        'socket_timeout': 30,
     }
-    
-    if format_option == 'audio':
+
+    if download_options['type'] == 'playlist':
+        common_opts['playlist_items'] = '1-1000'
+        if download_options['format'] == 'audio':
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                **common_opts
+            }
+        else:  # video
+            ydl_opts = {
+                'format': 'best',
+                **common_opts
+            }
+    else: # single video
         ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            **common_opts
-        }
-    else:  # video
-        ydl_opts = {
-            'format': 'best',
+            'format': f"{download_options['video_format_id']}+{download_options['audio_format_id']}",
             **common_opts
         }
     
@@ -216,24 +220,45 @@ def progress_hook(d, logger):
 def index():
     return render_template('index.html')
 
+@app.route('/api/video_info', methods=['POST'])
+def get_video_info():
+    data = request.json
+    url = data.get('url', '')
+    if not url or not re.match(r'^(https?\:\/\/)?(www\.youtube\.com|youtu\.?be)\/.*$', url):
+        return jsonify({'error': 'URL de YouTube inválida'}), 400
+
+    ydl_opts = {'quiet': True}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+            formats = []
+            for f in info.get('formats', []):
+                formats.append({
+                    'format_id': f.get('format_id'),
+                    'ext': f.get('ext'),
+                    'resolution': f.get('resolution'),
+                    'fps': f.get('fps'),
+                    'filesize_approx': f.get('filesize_approx'),
+                    'vcodec': f.get('vcodec'),
+                    'acodec': f.get('acodec'),
+                    'abr': f.get('abr')
+                })
+            return jsonify({'title': info.get('title'), 'formats': formats})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
 @app.route('/api/download', methods=['POST'])
 def start_download():
     data = request.json
     url = data.get('url', '')
-    format_option = data.get('format', 'video')
-    
-    # Validar URL
-    if not url or not re.match(r'^(https?\:\/\/)?(www\.youtube\.com|youtu\.?be)\/.+$', url):
+
+    if not url or not re.match(r'^(https?\:\/\/)?(www\.youtube\.com|youtu\.?be)\/.*$', url):
         return jsonify({'error': 'URL de YouTube inválida'}), 400
-    
-    # Generar ID único para esta descarga
-    download_id = secure_filename(f"{format_option}_{os.urandom(4).hex()}")
-    
-    # Inicializar estado
+
+    download_id = secure_filename(f"{data.get('type', 'download')}_{os.urandom(4).hex()}")
+
     download_status[download_id] = {
         'id': download_id,
-        'url': url,
-        'format': format_option,
         'status': 'starting',
         'playlist_title': '',
         'current_video': None,
@@ -242,12 +267,11 @@ def start_download():
         'current_progress': 0,
         'errors': []
     }
-    
-    # Iniciar descarga en un hilo separado
-    thread = threading.Thread(target=download_videos, args=(url, download_id, format_option))
+
+    thread = threading.Thread(target=download_videos, args=(data, download_id))
     thread.daemon = True
     thread.start()
-    
+
     return jsonify({'download_id': download_id})
 
 @app.route('/api/status/<download_id>', methods=['GET'])
