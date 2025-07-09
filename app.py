@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import threading
 from flask import Flask, render_template, request, jsonify, send_from_directory
 import yt_dlp
@@ -23,7 +24,63 @@ os.makedirs(LOGS_FOLDER, exist_ok=True)
 # Almacenamiento de estado de descargas
 download_status = {}
 
-# Función para manejar el progreso
+# Configuración mejorada de yt-dlp para optimizar las descargas
+def get_ytdlp_config(download_type, options):
+    """
+    Genera una configuración optimizada de yt-dlp basada en el tipo de descarga y opciones.
+    Esta configuración sigue las mejores prácticas recomendadas por expertos en yt-dlp.
+    """
+    # Configuración base optimizada para todas las descargas
+    base_config = {
+        'retries': 10,                     # Reintentos automáticos si falla la descarga
+        'fragment_retries': 10,            # Reintentos para fragmentos individuales
+        'skip_unavailable_fragments': True, # Continuar incluso si algunos fragmentos fallan
+        'ignoreerrors': True,              # Ignorar errores en playlists y continuar
+        'noprogress': True,                # Desactivar barra de progreso en consola
+        'quiet': True,                     # Reducir salida a consola
+        'no_warnings': True,               # Ocultar advertencias
+        'socket_timeout': 30,              # Timeout para conexiones
+        'http_chunk_size': 10485760,       # 10MB por chunk para mejor rendimiento
+        'buffersize': 1024*1024,           # 1MB de buffer para mejor velocidad
+        'nocheckcertificate': True,        # Ignorar problemas con certificados SSL
+        'extractor_retries': 3,            # Reintentos para extractores
+    }
+    
+    # Agregar opciones específicas para el tipo de descarga
+    if download_type == 'single':
+        # Para videos individuales, optimizar la mezcla de formatos
+        base_config.update({
+            'format': options.get('format', 'bestvideo+bestaudio/best'),
+            'merge_output_format': 'mp4',   # Formato universal compatible
+            'postprocessor_args': {
+                'ffmpeg': ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k'], # Mantener video, optimizar audio
+            },
+        })
+    elif download_type == 'playlist':
+        # Para playlists, optimizar para múltiples descargas
+        base_config.update({
+            'playlist_items': '1-1000',
+            'concurrent_fragment_downloads': 3,  # Descargar múltiples fragmentos a la vez
+        })
+        
+        if options.get('format') == 'audio':
+            base_config.update({
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            })
+        else: # video
+            base_config.update({
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'merge_output_format': 'mp4',
+            })
+            
+    return base_config
+
+# Función para manejar el progreso con cálculos más estables
 def progress_hook(d, download_id):
     status = download_status.get(download_id)
     if not status:
@@ -37,6 +94,14 @@ def progress_hook(d, download_id):
     if 'parts' not in status:
         status['parts'] = {}
     
+    # Inicializar historial de velocidad si no existe
+    if 'speed_history' not in status:
+        status['speed_history'] = []
+    
+    # Inicializar tiempo de inicio si no existe
+    if 'start_time' not in status:
+        status['start_time'] = time.time()
+    
     # Crear una clave única para esta parte del proceso
     part_key = format_id
     if '_mp4' in filename or '.mp4.' in filename or '.mkv.' in filename:
@@ -47,7 +112,9 @@ def progress_hook(d, download_id):
         status['parts'][part_key] = {
             'total_bytes': 0,
             'downloaded_bytes': 0,
-            'status': 'pending'
+            'status': 'pending',
+            'last_update': time.time(),
+            'last_bytes': 0
         }
     
     part = status['parts'][part_key]
@@ -69,10 +136,54 @@ def progress_hook(d, download_id):
         if downloaded_bytes:
             part['downloaded_bytes'] = downloaded_bytes
         
-        # Actualizar métricas de velocidad y tiempo
-        status['speed'] = d.get('speed')
-        status['eta'] = d.get('eta')
-        status['elapsed'] = d.get('elapsed')
+        # Calcular y suavizar la velocidad de descarga
+        current_time = time.time()
+        time_diff = current_time - part.get('last_update', current_time - 1)
+        
+        if time_diff > 0 and 'last_bytes' in part:
+            bytes_diff = downloaded_bytes - part.get('last_bytes', 0)
+            if bytes_diff > 0:
+                # Calcular velocidad instantánea
+                current_speed = bytes_diff / time_diff
+                
+                # Añadir a historial para suavizar (solo las últimas 5 muestras)
+                status['speed_history'].append(current_speed)
+                if len(status['speed_history']) > 5:
+                    status['speed_history'].pop(0)
+                
+                # Calcular velocidad promedio
+                avg_speed = sum(status['speed_history']) / len(status['speed_history'])
+                status['speed'] = avg_speed
+            else:
+                # Si no hay progreso, usar el último valor o el reportado por yt-dlp
+                status['speed'] = status.get('speed') or d.get('speed', 0)
+        else:
+            # Usar la velocidad reportada por yt-dlp si está disponible
+            reported_speed = d.get('speed')
+            if reported_speed:
+                status['speed'] = reported_speed
+        
+        # Actualizar para la próxima iteración
+        part['last_update'] = current_time
+        part['last_bytes'] = downloaded_bytes
+        
+        # Calcular tiempo transcurrido desde el inicio de la descarga
+        status['elapsed'] = time.time() - status.get('start_time', time.time())
+        
+        # Calcular ETA basado en la velocidad promedio
+        if status.get('speed', 0) > 0:
+            # Calcular bytes restantes
+            total_bytes_all_parts = sum(p.get('total_bytes', 0) for p in status['parts'].values())
+            downloaded_bytes_all_parts = sum(p.get('downloaded_bytes', 0) for p in status['parts'].values())
+            
+            if total_bytes_all_parts > downloaded_bytes_all_parts:
+                remaining_bytes = total_bytes_all_parts - downloaded_bytes_all_parts
+                status['eta'] = remaining_bytes / status['speed']
+            else:
+                status['eta'] = 0
+        else:
+            # Si no podemos calcular, usar el ETA reportado por yt-dlp
+            status['eta'] = d.get('eta', 0)
         
         # Calcular el progreso general combinando todas las partes
         total_bytes_all_parts = sum(p.get('total_bytes', 0) for p in status['parts'].values())
@@ -152,19 +263,16 @@ def download_videos(download_options, download_id):
     download_dir = os.path.join(DOWNLOAD_FOLDER, download_id)
     os.makedirs(download_dir, exist_ok=True)
 
-    common_opts = {
+    # Obtener configuración optimizada de yt-dlp
+    base_config = get_ytdlp_config(download_options['type'], download_options)
+    
+    # Configurar ruta de salida y hooks de progreso
+    base_config.update({
         'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
         'progress_hooks': [lambda d: progress_hook(d, download_id)],
-        'retries': 10,
-        'fragment_retries': 10,
-        'skip_unavailable_fragments': True,
-        'ignoreerrors': True,
-        'noprogress': True, # Desactiva la barra de progreso de yt-dlp en consola
-        'quiet': True,
-        'no_warnings': True,
         'writeinfojson': True,  # Guardar metadatos para identificar archivos finales
         'writethumbnail': True, # Guardar miniatura
-    }
+    })
 
     # Obtener información de la lista/video primero
     try:
@@ -182,36 +290,17 @@ def download_videos(download_options, download_id):
         download_status[download_id]['errors'].append(f'Error al obtener información: {str(e)}')
         return
 
-    if download_options['type'] == 'playlist':
-        common_opts['playlist_items'] = '1-1000'
-        if download_options['format'] == 'audio':
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                **common_opts
-            }
-        else:  # video
-            ydl_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'merge_output_format': 'mp4',  # Unir en mp4 por defecto
-                **common_opts
-            }
-    else: # single video
-        # Para video único, queremos unir video y audio con los formatos seleccionados
-        ydl_opts = {
-            'format': f"{download_options['video_format_id']}+{download_options['audio_format_id']}/bestvideo+bestaudio/best",
-            'merge_output_format': 'mp4', # Unir en mp4 por defecto
-            **common_opts
-        }
+    # Configurar opciones específicas según el tipo de descarga
+    if download_options['type'] == 'single':
+        # Para video único, usar los formatos seleccionados por el usuario
+        base_config['format'] = f"{download_options['video_format_id']}+{download_options['audio_format_id']}/bestvideo+bestaudio/best"
+    
+    # Si es una playlist, las opciones ya estarán configuradas por get_ytdlp_config
     
     # Iniciar descarga
     try:
         download_status[download_id]['status'] = 'downloading'
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(base_config) as ydl:
             ydl.download([url])
         
         # Procesar los archivos finales
@@ -315,6 +404,7 @@ def start_download():
 
     download_id = secure_filename(f"{data.get('type', 'download')}_{os.urandom(4).hex()}")
 
+    # Inicializar un estado de descarga profesional y completo
     download_status[download_id] = {
         'id': download_id,
         'status': 'starting',
@@ -326,13 +416,15 @@ def start_download():
         'total_bytes': 0,
         'downloaded_bytes': 0,
         'speed': 0,
+        'speed_history': [],       # Para suavizar las fluctuaciones
         'eta': 0,
+        'start_time': time.time(), # Tiempo de inicio preciso
         'elapsed': 0,
         'hook_status': 'pending',
         'current_stage': 'Iniciando...',
-        'parts': {},           # Para seguimiento detallado de partes de video/audio
-        'completed_files': [],  # Archivos que han terminado de descargarse
-        'final_files': [],      # Lista final de archivos con URLs
+        'parts': {},               # Para seguimiento detallado de partes
+        'completed_files': [],     # Archivos completados
+        'final_files': [],         # Archivos finales con URLs
         'errors': []
     }
 

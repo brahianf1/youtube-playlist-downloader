@@ -20,14 +20,25 @@ function formatFileSize(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 function formatTime(seconds) {
-    if (!seconds || seconds < 0) return '--:--';
+    if (!seconds || seconds < 0 || isNaN(seconds)) return '--:--';
+    
+    // Para tiempos largos, mostrar horas
+    if (seconds >= 3600) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+    
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
+}
 
 // Estado global de descargas
 const statusIntervals = {};
+const downloadTimers = {}; // Para controlar el tiempo transcurrido en cada descarga
 
 // Inicialización principal
 function initApp() {
@@ -131,8 +142,15 @@ function initApp() {
             // Iniciar feedback profesional de progreso
             const downloadId = data.download_id;
             let lastDownloaded = 0;
-            let lastTime = Date.now();
-            let elapsed = 0;
+            
+            // Inicializar el timer para esta descarga
+            downloadTimers[downloadId] = {
+                startTime: Date.now(),
+                lastUpdateTime: Date.now(),
+                totalElapsed: 0,
+                running: true
+            };
+            
             statusIntervals[downloadId] = setInterval(() => {
                 fetch(`/api/status/${downloadId}`)
                     .then(r => r.json())
@@ -141,27 +159,53 @@ function initApp() {
                             feedbackContainer.innerHTML = `<div class='alert alert-danger'>${status.error}</div>`;
                             clearInterval(statusIntervals[downloadId]);
                             startSingleDownloadBtn.disabled = false;
+                            downloadTimers[downloadId].running = false;
                             return;
                         }
+                        
                         // Calcular métricas
                         const percent = status.current_progress || 0;
                         const downloaded = status.downloaded_bytes || 0;
                         const total = status.total_bytes || 0;
+                        
+                        // Calcular tiempo transcurrido (acumulativo)
+                        const timer = downloadTimers[downloadId];
                         const now = Date.now();
-                        elapsed = (elapsed === 0 && percent > 0) ? 1 : Math.floor((now - lastTime) / 1000);
+                        // Tiempo transcurrido desde la última actualización
+                        const elapsedSinceLastUpdate = (now - timer.lastUpdateTime) / 1000;
+                        
+                        // Usar el tiempo del servidor si está disponible, de lo contrario, calcular localmente
+                        let elapsedTime;
+                        if (status.elapsed && status.elapsed > 0) {
+                            elapsedTime = status.elapsed; // Tiempo reportado por yt-dlp
+                        } else {
+                            // Tiempo transcurrido desde el inicio
+                            elapsedTime = timer.totalElapsed + elapsedSinceLastUpdate;
+                        }
+                        
+                        // Actualizar el timer para la próxima iteración
+                        timer.lastUpdateTime = now;
+                        timer.totalElapsed = elapsedTime;
+                        
+                        // Calcular velocidad y ETA
                         let speed = 0, eta = 0;
                         
-                        // Usar la velocidad proporcionada por el backend o calcularla
+                        // Usar la velocidad proporcionada por el backend si está disponible
                         if (status.speed && status.speed > 0) {
                             speed = status.speed / (1024 * 1024); // Convertir a MB/s
                             eta = status.eta || 0;
-                        } else if (downloaded > 0 && elapsed > 0) {
-                            speed = ((downloaded - lastDownloaded) / 1024 / 1024) / (elapsed || 1);
-                            eta = speed > 0 ? ((total - downloaded) / 1024 / 1024) / speed : 0;
+                        } else if (downloaded > lastDownloaded && elapsedSinceLastUpdate > 0) {
+                            // Calcular basado en la cantidad descargada desde la última actualización
+                            const bytesDownloadedSinceLastUpdate = downloaded - lastDownloaded;
+                            speed = (bytesDownloadedSinceLastUpdate / 1024 / 1024) / elapsedSinceLastUpdate;
+                            
+                            // Calcular ETA basado en la velocidad actual y los bytes restantes
+                            if (speed > 0 && total > downloaded) {
+                                eta = (total - downloaded) / (speed * 1024 * 1024);
+                            }
                         }
                         
                         lastDownloaded = downloaded;
-                        lastTime = now;
                         
                         // Mostrar la etapa actual del proceso
                         let stageInfo = '';
@@ -178,7 +222,7 @@ function initApp() {
                             total,
                             speed: speed ? speed.toFixed(2) : null,
                             eta,
-                            elapsed
+                            elapsed: elapsedTime
                         });
                         
                         // Si la descarga ha terminado
